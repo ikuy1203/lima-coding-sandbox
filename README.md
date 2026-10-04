@@ -65,6 +65,9 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 ```
 .
 ├── README.md
+├── Makefile                   # よく使う limactl の操作をまとめたもの（make help で一覧を表示）
+├── .env.example               # Makefile が読む設定（Git のユーザ名・メールアドレス）のひな形。.env にコピーして使う
+├── .gitignore                 # .env を除外する
 ├── coding-sandbox.yaml        # Lima テンプレート（probes もここに書いてある）
 ├── provision/                 # プロビジョニングスクリプト（起動のたびに実行されるため冪等に作ってある）
 │   ├── base-packages.sh       # mode: system  基本的なツール（Ubuntu のリポジトリ）
@@ -85,6 +88,60 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 - Lima 2.2.0 以上（`brew install lima`）
 
 ## 使い方
+
+### make で操作する
+
+よく使う操作は `Makefile` にまとめてあります。リポジトリのディレクトリで実行してください（`make help` で一覧を表示します）。
+
+```sh
+make start    # 作成（初回のみ）と起動
+make shell    # シェルに入る（停止していれば起動する）
+make stop     # 停止
+```
+
+| ターゲット | 内容 |
+|---|---|
+| `make start` | インスタンスが無ければ作成してから起動する。作成時には、Git のユーザ名とメールアドレスを `--param` で渡す（[後述](#git-のユーザ名とメールアドレスを-env-で指定する)） |
+| `make shell` | シェルに入る（停止していれば先に起動する） |
+| `make stop` / `make restart` | 停止 / 再起動（再起動は、失敗したプロビジョニングのやり直しにも使える） |
+| `make status` | 状態を表示する |
+| `make delete` | 削除する（確認あり。`YES=1` を付けると確認を省略） |
+| `make recreate` | 削除してから作り直す（`coding-sandbox.yaml` や `provision/*.sh` の変更を反映するとき） |
+| `make pubkey` | Git のコミット署名用の公開鍵を表示する |
+| `make logs` | プロビジョニングのログ（cloud-init）の末尾を表示する |
+| `make lint` | `scripts/lint.sh` を実行する |
+
+変数をコマンドラインで指定すると、インスタンス名・リソース（作成時のみ有効）・タイムアウト・Git の設定を変えられます。
+
+```sh
+make start NAME=sandbox2 CPUS=8 MEMORY=16 DISK=200 TIMEOUT=30m
+make start GIT_USER_NAME="<名前>" GIT_USER_EMAIL="<メールアドレス>"
+```
+
+`--param` は `limactl create` で渡しているため、名前にカンマが含まれていても問題ありません。
+
+#### Git のユーザ名とメールアドレスを .env で指定する
+
+`.env.example` をコピーして `.env` を作り、値を書きます（`.env` は `.gitignore` で除外しています）。
+
+```sh
+cp .env.example .env
+```
+
+```sh
+# .env
+GIT_USER_NAME=Taro Yamada
+GIT_USER_EMAIL=taro@example.com
+```
+
+- `.env` を読むのは Makefile だけです。VM には `limactl create --param` で値だけを渡し、`.env` 自体はコピーしません
+- 値は次の順で決まります: コマンドライン（`make start GIT_USER_NAME=...`） ＞ `.env` ＞ ホストの `git config --global`。`.env` が無いときや値が空のときは、ホストの Git の設定を使います
+- make の書式で読み込むため、値に空白やカンマがあってもクォートは要りません（両端を `"` か `'` で囲んだときは、その 1 組を取り除きます）。`#` から行末はコメントになります
+- 別のファイルを使うには `ENV_FILE` を指定します（例: `make start ENV_FILE=work.env`。指定したファイルが無いとエラーになります）。`*.env` も `.gitignore` で除外しています
+- 値が反映されるのは**インスタンスを作成するときだけ**です。作成後に `.env` を変えても今の VM には反映されません。`make recreate` で作り直すか、VM 内で `git config --global user.name ...` を実行してください（`provision/git-config.sh` は、VM 内で変えた設定を戻さないよう、設定済みの値を上書きしません）
+- Makefile の変数（`NAME`、`CPUS` など）も `.env` に書けます（コマンドラインで指定した値が優先されます）
+
+以下では、`make` を使わずに `limactl` で直接操作する方法を説明します。
 
 ### 作成・起動
 
