@@ -3,6 +3,7 @@
 #   $ make start    # 作成（初回のみ）と起動
 #   $ make shell    # シェルに入る（停止していれば起動する）
 #   $ make herdr    # herdr のセッションに入る（停止していれば起動する）
+#   $ make herdr-remote  # ホストの herdr から VM のセッションにリモート接続する
 #   $ make help     # ターゲットの一覧
 #
 # 変数はコマンドラインで上書きできる:
@@ -44,10 +45,10 @@ endef
 
 .NOTPARALLEL:
 .DEFAULT_GOAL := help
-.PHONY: help create start shell herdr stop restart status delete recreate pubkey logs lint
+.PHONY: help create start shell herdr herdr-remote stop restart status delete recreate pubkey logs lint
 
 help: ## ターゲットの一覧を表示する
-	@grep -E '^[a-z-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F ':.*## ' '{ printf "  make %-10s %s\n", $$1, $$2 }'
+	@grep -E '^[a-z-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F ':.*## ' '{ printf "  make %-12s %s\n", $$1, $$2 }'
 
 # Git の値は、前後の空白と、両端を囲む引用符（" または ' の 1 組）を取り除いてから使う。
 # 空ならホストの git config --global の値を使う
@@ -87,6 +88,22 @@ shell: start ## シェルに入る（停止していれば起動する）
 # limactl shell はコマンドを指定してもログインシェルで実行するため、~/.local/bin の herdr が見つかる
 herdr: start ## herdr のセッションに入る（無ければ作る。停止していれば起動する）
 	limactl shell $(NAME) herdr
+
+# Lima はインスタンスごとに ~/.lima/<名前>/ssh.config（Host lima-<名前>、HostName 127.0.0.1）を作る。
+# ~/.ssh/config がそれを Include していないと、ssh -G は HostName としてホスト名をそのまま返す
+herdr-remote: start ## ホストの herdr から VM のセッションにリモート接続する（停止していれば起動する）
+	@if ! command -v herdr >/dev/null 2>&1; then \
+	  echo >&2 "エラー: ホストに herdr がインストールされていません（brew install herdr。ほかの方法は https://herdr.dev/docs/install/ を参照）"; \
+	  exit 1; \
+	fi; \
+	host=lima-$(NAME); \
+	out=$$(ssh -G "$$host") || exit $$?; \
+	if [ "$$(printf '%s\n' "$$out" | awk '$$1 == "hostname" { print $$2 }')" = "$$host" ]; then \
+	  echo >&2 "エラー: ssh で $$host に接続する設定がありません。ホストの ~/.ssh/config の先頭に次の 1 行を追加してください:"; \
+	  echo >&2 "  Include ~/.lima/*/ssh.config"; \
+	  exit 1; \
+	fi; \
+	herdr --remote "$$host"
 
 stop: ## インスタンスを停止する
 	@$(get-status); \
