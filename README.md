@@ -11,6 +11,7 @@
 | ホストのディレクトリ | マウントしない（`mounts: []`）。Lima のグローバル設定から混入した場合は、起動時に検出してエラーにする（[後述](#ホストのマウントが混入しないように)） |
 | ユーザ | ホストと同じ名前・UID の通常ユーザ（非 root）。ホームは `/home/<user>.guest`。パスワードなしで sudo できる（Lima の既定） |
 | リソース | 4 CPU / 8 GiB メモリ / 100 GiB ディスク（ディスクはスパースファイルなので、実際に使った分だけ消費する） |
+| 音声 | VM の中で再生した音を、ホストのスピーカーから鳴らす（再生のみ。マイクは使えない。[後述](#音声)） |
 | ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、Docker Engine（`sudo docker` で使う）、Git のユーザ設定・コミット署名鍵、ターミナル（`$TERM`）の terminfo の代替設定 |
 
 基本的なツールは Ubuntu のリポジトリから、それ以外の各ソフトウェアは公式ドキュメントの手順でインストールします。
@@ -20,6 +21,7 @@
 | 基本的なツール | Ubuntu のリポジトリ（apt） | `provision/base-packages.sh`（root） | apt パッケージ |
 | GitHub CLI | [Installing gh on Linux and BSD](https://github.com/cli/cli/blob/trunk/docs/install_linux.md#debian)（apt リポジトリ） | `provision/github-cli.sh`（root） | apt パッケージ |
 | Docker Engine | [Install Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubuntu/)（apt リポジトリ） | `provision/docker-engine.sh`（root） | apt パッケージ |
+| 音声（alsa-utils） | Ubuntu のリポジトリ（apt） | `provision/audio.sh`（root） | apt パッケージ、`/etc/udev/rules.d/70-lima-coding-sandbox-sound.rules` |
 | Git 設定・コミット署名 | - | `provision/git-config.sh` | `~/.ssh/id_ed25519_signing`、`~/.gitconfig` |
 | herdr | [Install](https://herdr.dev/docs/install/) | `provision/herdr.sh` | `~/.local/bin/herdr` |
 | Antigravity CLI | [Installation and auth](https://antigravity.google/docs/cli/install) | `provision/antigravity-cli.sh` | `~/.local/bin/agy` |
@@ -74,6 +76,7 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── terminfo-fallback.sh   # mode: system  $TERM の terminfo が無いときの代替
 │   ├── github-cli.sh          # mode: system  GitHub CLI
 │   ├── docker-engine.sh       # mode: system  Docker Engine
+│   ├── audio.sh               # mode: system  音声（alsa-utils とサウンドデバイスのパーミッション）
 │   ├── git-config.sh          # mode: user    Git のユーザ設定とコミット署名
 │   ├── herdr.sh               # mode: user
 │   ├── antigravity-cli.sh     # mode: user
@@ -386,6 +389,24 @@ sudo docker run --rm hello-world
 - Docker Engine は公式手順どおりの通常の構成です。デーモンは root 権限のシステムサービス（`docker.service`）として動き、VM の起動時に自動で起動します
 - 通常ユーザは `docker` グループに入れていないので、`docker` コマンドには `sudo` を付けます（付けないと `/var/run/docker.sock` に接続できず permission denied になります）。エージェントに Docker を使わせるときも `sudo docker ...` を使うよう指示してください
 - VM 内のユーザはもともとパスワードなしで sudo できるため、`docker` グループに入れた場合と権限は変わりません
+
+## 音声
+
+VM の中で再生した音は、ホストのスピーカーから鳴ります。次のコマンドで確認できます（「Front Center」と聞こえます）。
+
+```sh
+limactl shell coding-sandbox aplay /usr/share/sounds/alsa/Front_Center.wav
+```
+
+- `coding-sandbox.yaml` の `audio.device: vz` で、VM に virtio-sound のデバイスが追加されます（Lima では EXPERIMENTAL の機能です）。再生専用で、録音用のデバイスは無いため、VM からホストのマイクは使えません
+- `audio.interface` は QEMU 用の設定です。VZ（macOS での Lima の既定）では常に virtio-sound になるため、指定していません
+- VM のカーネルには virtio-sound のドライバが含まれていて、自動で読み込まれます。`provision/audio.sh` で alsa-utils（`aplay`、`speaker-test`）をインストールし、通常ユーザもサウンドデバイスを使えるようにしています
+- サウンドデバイス（`/dev/snd/*`）は root:audio の 0660 で作られます。通常ユーザを `audio` グループに入れても、Lima はプロビジョニングより前に ssh の接続（ControlMaster）を張っていて、`limactl shell` はその接続のグループを引き継ぐため、VM を再起動するまで反映されません。そのため、udev ルールでパーミッションを 0666 にしています
+- `provision/audio.sh` が失敗しても Lima は起動処理を続けるため、probe（`audio playback to be available to the user`）で確認しています。`aplay` が入っていることに加え、VM に virtio-sound のデバイスが追加されているとき（音声が有効なとき）は、再生デバイスが 1 つ以上あり、通常ユーザが書き込めることを確認します
+- PulseAudio や PipeWire は入れていないため、音は ALSA で直接再生します
+- ターミナルのベル（`\a`）は、この設定と関係なく、ssh を通ってホストのターミナルに届きます（鳴るかどうかはターミナルの設定によります）
+
+鳴らしたくないときは、`coding-sandbox.yaml` の `audio.device` を空にして（`device: ""`）、インスタンスを作り直してください。`audio:` ごと削除すると、`$LIMA_HOME/_config/default.yaml` に音声の設定があった場合に、そちらが使われます。また、`override.yaml` に音声の設定があると、テンプレートの値よりも優先されるため、そちらも確認してください。
 
 ## 更新
 
