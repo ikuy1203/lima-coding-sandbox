@@ -5,6 +5,7 @@
 #
 # - Ubuntu 26.04 LTS
 # - ホストのディレクトリは一切マウントしない
+# - 基本的なツール（git / gh / build-essential / ripgrep / Python の venv・pipx / Node.js など）をインストールする
 # - herdr / Antigravity CLI / GitHub Copilot CLI / Docker Engine を公式手順でインストールする
 # - エージェントは非 root の通常ユーザで実行する（Docker は `sudo docker` で使う）
 #
@@ -44,6 +45,10 @@ ssh:
 # provision と probes のスクリプトは Go テンプレートとして展開されるため、`{{` を書かないこと。
 provision:
 - mode: system
+  file: provision/base-packages.sh
+- mode: system
+  file: provision/github-cli.sh
+- mode: system
   file: provision/docker-engine.sh
 - mode: user
   file: provision/herdr.sh
@@ -70,6 +75,20 @@ probes:
     Host directories must not be mounted in this instance. Stop it without using it, and check
     $LIMA_HOME/_config/default.yaml, override.yaml and base.yaml (LIMA_HOME defaults to ~/.lima)
     and the --mount option. See "README.md" for details.
+- description: basic tools (git, gh, etc.) to be installed
+  script: |
+    #!/bin/bash
+    set -eu -o pipefail
+    # provision/base-packages.sh と provision/github-cli.sh で入れるパッケージの主なコマンド
+    for cmd in git curl wget jq less ssh gh gcc make rg fdfind unzip zip tree shellcheck pip3 pipx node npm; do
+      # $1 は内側の bash で展開させる
+      # shellcheck disable=SC2016
+      if ! timeout 30s bash -c 'until command -v "$1" >/dev/null; do sleep 3; done' _ "$cmd"; then
+        echo >&2 "$cmd is not installed yet"
+        exit 1
+      fi
+    done
+  hint: See "/var/log/cloud-init-output.log" in the guest
 - description: herdr, Antigravity CLI and GitHub Copilot CLI to be installed
   script: |
     #!/bin/bash
@@ -104,5 +123,7 @@ message: |
   ------
   limactl shell --sync . {{.Name}}
   ------
-  インストール済み: herdr, agy (Antigravity CLI), copilot (GitHub Copilot CLI), docker（`sudo docker` で使う）
+  インストール済み:
+  - git, gh, gcc / make, rg, fdfind, python3（venv / pip3 / pipx）, node / npm などの基本的なツール
+  - herdr, agy (Antigravity CLI), copilot (GitHub Copilot CLI), docker（`sudo docker` で使う）
   初回の認証手順は README.md を参照してください。
