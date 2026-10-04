@@ -142,10 +142,10 @@ probes:
   script: |
     #!/bin/bash
     set -eu -o pipefail
-    # provision/audio.sh で入れる aplay と、udev ルールで通常ユーザに開放する再生デバイスを確認する。
+    # provision/audio.sh で入れる aplay / mpg123 と、udev ルールで通常ユーザに開放する再生デバイスを確認する。
     # 音声が有効か（VM に virtio-sound のデバイスが追加されているか）は、virtio のデバイス ID（0x0019）で判定する。
     # 有効なら、再生デバイスが 1 つ以上あり、すべて書き込めることを必須にする（ドライバの初期化の失敗なども検出する）。
-    # audio.device: "" で無効にしたときは virtio-sound のデバイスが無いため、aplay だけを確認する
+    # audio.device: "" で無効にしたときは virtio-sound のデバイスが無いため、aplay と mpg123 だけを確認する
     # shellcheck disable=SC2016
     if ! timeout 30s bash -c '
       has_virtio_sound() {
@@ -156,7 +156,7 @@ probes:
         return 1
       }
       ready() {
-        command -v aplay >/dev/null || return 1
+        command -v aplay >/dev/null && command -v mpg123 >/dev/null || return 1
         has_virtio_sound || return 0
         local dev found=0
         for dev in /dev/snd/pcmC*D*p; do
@@ -168,7 +168,7 @@ probes:
         [ "$found" = 1 ]
       }
       until ready; do sleep 3; done'; then
-      echo >&2 "aplay is not installed yet, or no sound playback device writable by $(id -un) was found"
+      echo >&2 "aplay or mpg123 is not installed yet, or no sound playback device writable by $(id -un) was found"
       exit 1
     fi
   hint: See "/var/log/cloud-init-output.log" in the guest
@@ -198,7 +198,7 @@ message: |
   インストール済み:
   - git, gh, gcc / make, rg, fdfind, python3（venv / pip3 / pipx）, node / npm などの基本的なツール
   - herdr, agy (Antigravity CLI), copilot (GitHub Copilot CLI), docker（`sudo docker` で使う）
-  - aplay など（alsa-utils）。VM の中で再生した音はホストのスピーカーから鳴ります
+  - aplay, mpg123 など（alsa-utils, mpg123）。VM の中で再生した音はホストのスピーカーから鳴ります
   コミットは SSH 鍵で署名されます。GitHub で Verified と表示させるには、次の公開鍵を
   https://github.com/settings/ssh/new で「Key type: Signing Key」として登録してください:
   ------
