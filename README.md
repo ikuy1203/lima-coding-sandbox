@@ -21,7 +21,7 @@
 | 基本的なツール | Ubuntu のリポジトリ（apt） | `provision/base-packages.sh`（root） | apt パッケージ |
 | GitHub CLI | [Installing gh on Linux and BSD](https://github.com/cli/cli/blob/trunk/docs/install_linux.md#debian)（apt リポジトリ） | `provision/github-cli.sh`（root） | apt パッケージ |
 | Docker Engine | [Install Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubuntu/)（apt リポジトリ） | `provision/docker-engine.sh`（root） | apt パッケージ |
-| 音声（alsa-utils） | Ubuntu のリポジトリ（apt） | `provision/audio.sh`（root） | apt パッケージ、`/etc/udev/rules.d/70-lima-coding-sandbox-sound.rules` |
+| 音声（alsa-utils, mpg123） | Ubuntu のリポジトリ（apt） | `provision/audio.sh`（root） | apt パッケージ、`/etc/udev/rules.d/70-lima-coding-sandbox-sound.rules` |
 | Git 設定・コミット署名 | - | `provision/git-config.sh` | `~/.ssh/id_ed25519_signing`、`~/.gitconfig` |
 | herdr | [Install](https://herdr.dev/docs/install/) | `provision/herdr.sh` | `~/.local/bin/herdr` |
 | Antigravity CLI | [Installation and auth](https://antigravity.google/docs/cli/install) | `provision/antigravity-cli.sh` | `~/.local/bin/agy` |
@@ -60,7 +60,7 @@
 
 ### 動作確認した環境
 
-macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）、git 2.53.0、GitHub CLI 2.102.0、Python 3.14.4、Node.js 22.22.1、Docker Engine 29.8.2、herdr 0.9.3、Antigravity CLI 1.2.16、GitHub Copilot CLI 1.0.91
+macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）、git 2.53.0、GitHub CLI 2.102.0、Python 3.14.4、Node.js 22.22.1、Docker Engine 29.8.2、herdr 0.9.3、mpg123 1.33.3、Antigravity CLI 1.2.16、GitHub Copilot CLI 1.0.91
 
 ## ファイル構成
 
@@ -108,6 +108,7 @@ make stop     # 停止
 | `make start` | インスタンスが無ければ作成してから起動する。作成時には、Git のユーザ名とメールアドレスを `--param` で渡す（[後述](#git-のユーザ名とメールアドレスを-env-で指定する)） |
 | `make shell` | シェルに入る（停止していれば先に起動する） |
 | `make herdr` | herdr のセッションに入る（無ければ作る。停止していれば先に起動する） |
+| `make herdr-remote` | ホストの herdr から VM のセッションにリモート接続する（停止していれば先に起動する。[後述](#herdr)） |
 | `make stop` / `make restart` | 停止 / 再起動（再起動は、失敗したプロビジョニングのやり直しにも使える） |
 | `make status` | 状態を表示する |
 | `make delete` | 削除する（確認あり。`YES=1` を付けると確認を省略） |
@@ -168,13 +169,14 @@ limactl start \
 
 インスタンス名は `coding-sandbox` です（変えるときは `--name=<名前>` を付ける）。
 初回はイメージのダウンロードとプロビジョニングがあるため数分かかります。
-起動時に `probes` で次の 5 点を確認し、すべて満たされた時点で完了します。
+起動時に `probes` で次の 6 点を確認し、すべて満たされた時点で完了します。
 
 1. ホストのディレクトリがマウントされていないこと
 2. 基本的なツール（git、gh など）がインストールされていること
 3. herdr / Antigravity CLI / GitHub Copilot CLI がインストールされていること
 4. Docker Engine が動いていること
-5. Git のコミット署名用 SSH 鍵が作成されていること
+5. 音声を再生できること（`aplay` と `mpg123` がインストールされていて、音声が有効なときは通常ユーザが再生デバイスに書き込めること）
+6. Git のコミット署名用 SSH 鍵が作成されていること
 
 > [!NOTE]
 > `coding-sandbox.yaml` と `provision/*.sh` の内容は、インスタンスの作成時に `~/.lima/coding-sandbox/lima.yaml` に取り込まれます。
@@ -372,6 +374,37 @@ herdr のセッションが起動します（既にあれば接続します）�
 ホストからは `make herdr`（または `limactl shell coding-sandbox herdr`）で直接入れます。デタッチするとホストのシェルに戻ります。
 ペインの中で `copilot` や `agy` を起動すると、herdr が自動でエージェントとして検出します。
 
+#### ホストの herdr からリモート接続する
+
+ホスト（macOS）にも herdr を入れておくと、ホストの herdr から VM の herdr のセッションに SSH で接続できます。
+ペインやエージェントは VM の中で動いたまま、画面の表示はホストの herdr が行うため、ホストのキーバインドやテーマがそのまま使えます。
+
+1. 事前準備（ホストで 1 回だけ）
+   - herdr をインストールします（`brew install herdr`。ほかの方法は[公式手順](https://herdr.dev/docs/install/)を参照）
+   - ホストの `~/.ssh/config` の先頭に次の 1 行を追加して、`ssh lima-coding-sandbox` で VM に接続できるようにします（Lima がインスタンスごとに作る SSH の設定を読み込みます）:
+     ```ssh-config
+     Include ~/.lima/*/ssh.config
+     ```
+2. 接続する
+   ```sh
+   make herdr-remote   # herdr --remote lima-coding-sandbox と同じ
+   ```
+   ホストのワークスペースと VM のワークスペースを 1 つのウィンドウで行き来したいときは、VM を保存済みのマシンとして登録します（以後はホストで `herdr` を起動するとサイドバーに表示されます）:
+   ```sh
+   herdr machine add lima-coding-sandbox
+   ```
+
+#### 通知音
+
+herdr は、エージェントが入力を求めてきたとき（承認や質問）と、作業が終わったときに通知音を鳴らします。鳴る条件は種類によって違います。
+
+- 入力を求める音: 常に鳴ります（今表示しているタブのエージェントでも鳴ります）
+- 作業が終わった音: 今表示しているタブのエージェントでは鳴りません。同じワークスペースでも、別のタブのエージェントなら鳴ります。また、ターミナルのウィンドウからフォーカスが外れているときは、表示中のタブでも鳴ります（ターミナルがフォーカスの変化を herdr に伝えている場合）
+
+VM の中で起動した場合は VM の herdr が `mpg123` で鳴らし（[音声](#音声)の仕組みで、ホストのスピーカーから出ます）、ホストからリモート接続した場合はホストの herdr が鳴らします。
+
+#### インテグレーション
+
 herdr のサーバを再起動しても同じセッションを再開できるようにするには、[インテグレーション](https://herdr.dev/docs/integrations/)をインストールします。
 各エージェントを一度起動して、その設定ディレクトリが作られてから実行してください。
 
@@ -400,9 +433,10 @@ limactl shell coding-sandbox aplay /usr/share/sounds/alsa/Front_Center.wav
 
 - `coding-sandbox.yaml` の `audio.device: vz` で、VM に virtio-sound のデバイスが追加されます（Lima では EXPERIMENTAL の機能です）。再生専用で、録音用のデバイスは無いため、VM からホストのマイクは使えません
 - `audio.interface` は QEMU 用の設定です。VZ（macOS での Lima の既定）では常に virtio-sound になるため、指定していません
-- VM のカーネルには virtio-sound のドライバが含まれていて、自動で読み込まれます。`provision/audio.sh` で alsa-utils（`aplay`、`speaker-test`）をインストールし、通常ユーザもサウンドデバイスを使えるようにしています
+- VM のカーネルには virtio-sound のドライバが含まれていて、自動で読み込まれます。`provision/audio.sh` で alsa-utils（`aplay`、`speaker-test`）と `mpg123` をインストールし、通常ユーザもサウンドデバイスを使えるようにしています
+- `mpg123` は herdr の通知音のために入れています。herdr の通知音は MP3 で、Linux では MP3 を再生できるプレイヤー（`pw-play`、`ffplay`、`mpg123`、`mpv` のいずれか）を使います。`aplay` は MP3 を再生できないため、`mpg123` が無いと herdr の通知音は鳴りません（エラーも表示されません）
 - サウンドデバイス（`/dev/snd/*`）は root:audio の 0660 で作られます。通常ユーザを `audio` グループに入れても、Lima はプロビジョニングより前に ssh の接続（ControlMaster）を張っていて、`limactl shell` はその接続のグループを引き継ぐため、VM を再起動するまで反映されません。そのため、udev ルールでパーミッションを 0666 にしています
-- `provision/audio.sh` が失敗しても Lima は起動処理を続けるため、probe（`audio playback to be available to the user`）で確認しています。`aplay` が入っていることに加え、VM に virtio-sound のデバイスが追加されているとき（音声が有効なとき）は、再生デバイスが 1 つ以上あり、通常ユーザが書き込めることを確認します
+- `provision/audio.sh` が失敗しても Lima は起動処理を続けるため、probe（`audio playback to be available to the user`）で確認しています。`aplay` と `mpg123` が入っていることに加え、VM に virtio-sound のデバイスが追加されているとき（音声が有効なとき）は、再生デバイスが 1 つ以上あり、通常ユーザが書き込めることを確認します
 - PulseAudio や PipeWire は入れていないため、音は ALSA で直接再生します
 - ターミナルのベル（`\a`）は、この設定と関係なく、ssh を通ってホストのターミナルに届きます（鳴るかどうかはターミナルの設定によります）
 
@@ -447,6 +481,7 @@ limactl start --timeout=30m ./coding-sandbox.yaml
 
 - 隔離の境界は VM です。VM 内のユーザはパスワードなしで sudo できるため、エージェントも VM 内では root 相当の操作ができます
 - テンプレートでは、ホストのディレクトリのマウント、SSH エージェントの転送、ホストの `~/.ssh/*.pub` の読み込みを、いずれも無効にしています。マウントだけは Lima のグローバル設定から混入しうるため、起動時に検出しています（[ホストのマウントが混入しないように](#ホストのマウントが混入しないように)）
+- ホストの herdr からリモート接続（`make herdr-remote`）しても、SSH エージェントは転送されません（VM のペインでは `SSH_AUTH_SOCK` が設定されません）。この接続はホストの `~/.ssh/config` を使うため、`Host *` などで `ForwardAgent yes` を設定していると転送されることがあります。その場合は `lima-*` を対象から外してください
 - Lima の既定動作により、ゲスト内で `127.0.0.1` や `0.0.0.0` に bind されたポートは、ホストの `127.0.0.1` に転送されます（開発中の Web アプリをホストのブラウザで確認できますが、エージェントが起動したサーバにもホストからアクセスできる状態になります）
 - VM からはインターネットに接続できます。また、`host.lima.internal`（`192.168.5.2`）はホストのループバックアドレスにつながっているため、ホストで `127.0.0.1` に bind しているサービス（ローカルのデータベースや開発サーバ、ほかの Lima インスタンスから転送されているポートなど）にも VM から接続できます。認証のないサービスをホストで動かしているときは注意してください（VM 内のファイアウォールで遮断しても、エージェントは sudo で解除できます）
 - 各 CLI の認証情報は VM 内に保存されます（Copilot CLI と gh は平文で保存される場合があります）。不要になったら `limactl delete` で VM ごと削除してください

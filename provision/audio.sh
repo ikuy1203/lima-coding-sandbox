@@ -5,7 +5,7 @@
 # （録音用のデバイスは無いため、VM からホストのマイクは使えない）。
 # ドライバ（virtio_snd）は Ubuntu のカーネルに含まれていて自動で読み込まれるので、ここでは次の 2 つを行う。
 #
-# 1. alsa-utils（aplay / speaker-test と、確認用の /usr/share/sounds/alsa/*.wav）をインストールする
+# 1. alsa-utils（aplay / speaker-test と、確認用の /usr/share/sounds/alsa/*.wav）と mpg123（MP3 再生）をインストールする
 # 2. /dev/snd/* を通常ユーザも読み書きできるようにする（udev ルール）
 #    /dev/snd/* は root:audio の 0660 で作られ、通常ユーザは audio グループに入っていない。
 #    usermod -aG audio で追加しても、Lima はプロビジョニングより前に ssh の ControlMaster を張っていて、
@@ -17,10 +17,16 @@ set -eux -o pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
-# shellcheck disable=SC2016
-if [ "$(dpkg-query -W -f='${db:Status-Status}' alsa-utils 2>/dev/null)" != installed ]; then
+pkgs=()
+for pkg in alsa-utils mpg123; do
+  # shellcheck disable=SC2016
+  if [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null)" != installed ]; then
+    pkgs+=("$pkg")
+  fi
+done
+if [ ${#pkgs[@]} -gt 0 ]; then
   apt-get update
-  apt-get install -y alsa-utils
+  apt-get install -y "${pkgs[@]}"
 fi
 
 rules=/etc/udev/rules.d/70-lima-coding-sandbox-sound.rules
