@@ -11,12 +11,14 @@
 | ホストのディレクトリ | マウントしない（`mounts: []`）。Lima のグローバル設定から混入した場合は、起動時に検出してエラーにする（[後述](#ホストのマウントが混入しないように)） |
 | ユーザ | ホストと同じ名前・UID の通常ユーザ（非 root）。ホームは `/home/<user>.guest`。パスワードなしで sudo できる（Lima の既定） |
 | リソース | 4 CPU / 8 GiB メモリ / 100 GiB ディスク（ディスクはスパースファイルなので、実際に使った分だけ消費する） |
-| ソフトウェア | herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、Docker Engine（`sudo docker` で使う） |
+| ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、Docker Engine（`sudo docker` で使う） |
 
-各ソフトウェアは公式ドキュメントの手順でインストールします。
+基本的なツールは Ubuntu のリポジトリから、それ以外の各ソフトウェアは公式ドキュメントの手順でインストールします。
 
 | ソフトウェア | 公式手順 | スクリプト | インストール先 |
 |---|---|---|---|
+| 基本的なツール | Ubuntu のリポジトリ（apt） | `provision/base-packages.sh`（root） | apt パッケージ |
+| GitHub CLI | [Installing gh on Linux and BSD](https://github.com/cli/cli/blob/trunk/docs/install_linux.md#debian)（apt リポジトリ） | `provision/github-cli.sh`（root） | apt パッケージ |
 | Docker Engine | [Install Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubuntu/)（apt リポジトリ） | `provision/docker-engine.sh`（root） | apt パッケージ |
 | herdr | [Install](https://herdr.dev/docs/install/) | `provision/herdr.sh` | `~/.local/bin/herdr` |
 | Antigravity CLI | [Installation and auth](https://antigravity.google/docs/cli/install) | `provision/antigravity-cli.sh` | `~/.local/bin/agy` |
@@ -26,9 +28,36 @@
 > Antigravity CLI だけは、公式のコマンドに `curl --compressed` を追加しています。
 > `antigravity.google` が、クライアントが要求していないのに gzip 圧縮した本文を返すことがあり、そのままだとインストールに失敗するためです（詳しくは `provision/antigravity-cli.sh` のコメントを参照）。
 
+> [!NOTE]
+> GitHub CLI は、Ubuntu のリポジトリ（universe）にも `gh` パッケージがありますが、Ubuntu 26.04 の版（2.46）は廃止された GitHub の API を使っているため動かないと、GitHub CLI の公式ドキュメントに書かれています。
+> そのため公式の apt リポジトリ（`cli.github.com`）を登録して、そこから入れています（`apt-cache policy gh` で確認できます）。
+
+### 基本的なツール
+
+`provision/base-packages.sh` で、次のパッケージを Ubuntu のリポジトリからインストールします（gh だけは `provision/github-cli.sh` で公式のリポジトリから入れます）。
+
+| パッケージ | 主なコマンド |
+|---|---|
+| git、curl、wget、jq、less、openssh-client、ca-certificates | `git`、`curl`、`wget`、`jq`、`less`、`ssh` |
+| gh（GitHub CLI） | `gh` |
+| build-essential | `gcc`、`g++`、`make` |
+| ripgrep、fd-find、unzip、zip、tree | `rg`、`fdfind`、`unzip`、`zip`、`tree` |
+| shellcheck | `shellcheck` |
+| python3-venv、python3-pip、pipx | `python3 -m venv`、`pip3`、`pipx` |
+| nodejs、npm | `node`、`npm`、`npx` |
+
+1 行目のパッケージはイメージに最初から入っていますが、イメージが変わっても確実に入るように明記しています（新しい版があれば、初回の起動時に更新されます）。
+
+- fd-find のコマンド名は `fd` ではなく `fdfind` です（Ubuntu のパッケージの仕様）。`fd` で使いたいときは `ln -s "$(command -v fdfind)" ~/.local/bin/fd` を実行してください
+- `pip3 install` で Python のパッケージをシステムに入れることはできません（`externally-managed-environment` のエラーになります）。`python3 -m venv` で作った仮想環境の中で使うか、コマンドとして使うツールは `pipx install` で入れてください（`~/.local/bin` に入ります）
+- Node.js と npm は Ubuntu のリポジトリの版（Node.js 22 / npm 9）です。`npm install -g` は `/usr/local` に入れようとするため、そのままでは権限のエラー（`EACCES`）になります。先に `npm config set prefix ~/.local` を実行しておくと、`~/.local/bin` に入るようになります（`npx` はそのまま使えます）
+
+ツールを追加するときは、`provision/base-packages.sh` の `base_packages` に追加して、インスタンスを作り直してください。今の VM にだけ入れるなら、VM 内で `sudo apt-get install <パッケージ>` を実行します。
+パッケージを削除するときは、`coding-sandbox.yaml` の probe（`basic tools (git, gh, etc.) to be installed`）のコマンド一覧からも、そのパッケージのコマンドを削除してください（残っていると、起動時の確認が終わらずにタイムアウトします）。
+
 ### 動作確認した環境
 
-macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）、Docker Engine 29.8.2、herdr 0.9.3、Antigravity CLI 1.2.16、GitHub Copilot CLI 1.0.91
+macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）、git 2.53.0、GitHub CLI 2.102.0、Python 3.14.4、Node.js 22.22.1、Docker Engine 29.8.2、herdr 0.9.3、Antigravity CLI 1.2.16、GitHub Copilot CLI 1.0.91
 
 ## ファイル構成
 
@@ -37,6 +66,8 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 ├── README.md
 ├── coding-sandbox.yaml        # Lima テンプレート（probes もここに書いてある）
 ├── provision/                 # プロビジョニングスクリプト（起動のたびに実行されるため冪等に作ってある）
+│   ├── base-packages.sh       # mode: system  基本的なツール（Ubuntu のリポジトリ）
+│   ├── github-cli.sh          # mode: system  GitHub CLI
 │   ├── docker-engine.sh       # mode: system  Docker Engine
 │   ├── herdr.sh               # mode: user
 │   ├── antigravity-cli.sh     # mode: user
@@ -61,11 +92,12 @@ limactl start ./coding-sandbox.yaml
 
 インスタンス名は `coding-sandbox` です（変えるときは `--name=<名前>` を付ける）。
 初回はイメージのダウンロードとプロビジョニングがあるため数分かかります。
-起動時に `probes` で次の 3 点を確認し、すべて満たされた時点で完了します。
+起動時に `probes` で次の 4 点を確認し、すべて満たされた時点で完了します。
 
 1. ホストのディレクトリがマウントされていないこと
-2. herdr / Antigravity CLI / GitHub Copilot CLI がインストールされていること
-3. Docker Engine が動いていること
+2. 基本的なツール（git、gh など）がインストールされていること
+3. herdr / Antigravity CLI / GitHub Copilot CLI がインストールされていること
+4. Docker Engine が動いていること
 
 > [!NOTE]
 > `coding-sandbox.yaml` と `provision/*.sh` の内容は、インスタンスの作成時に `~/.lima/coding-sandbox/lima.yaml` に取り込まれます。
@@ -147,7 +179,7 @@ limactl list coding-sandbox --format '{{json .Config.Mounts}}'
 ホストのファイルはマウントされないため、次のいずれかの方法を使います。
 
 1. **VM 内で `git clone` する（推奨）**
-   Git の認証情報は VM 内で別途用意します（HTTPS + Personal Access Token、VM 内で作った SSH 鍵など）。
+   Git の認証情報は VM 内で別途用意します。GitHub なら、`gh auth login` でログインすると、HTTPS での `git clone` / `git push` にも gh の認証情報が使われます（[GitHub CLI](#github-cli) を参照）。ほかに、HTTPS + Personal Access Token や、VM 内で作った SSH 鍵なども使えます。
 2. **`limactl shell --sync` を使う**
    ホストのカレントディレクトリをゲストにコピーし、シェルを終了するときに、変更をホストへ書き戻すかどうかを確認されます（差分を見てから選べます）。
    ```sh
@@ -166,6 +198,23 @@ limactl list coding-sandbox --format '{{json .Config.Mounts}}'
 
 ## 初回のセットアップ（認証）
 
+### GitHub CLI
+
+```sh
+gh auth login
+```
+
+対話形式で聞かれるので、`GitHub.com` と `HTTPS` を選び、`Authenticate Git with your GitHub credentials?` には `Yes` と答えます（VM 内の git が、GitHub への HTTPS のアクセスに gh の認証情報を使うようになります）。
+認証方法で `Login with a web browser` を選ぶと、ワンタイムコードが表示されます。Enter を押すと、VM にはブラウザが無いため開けなかったというメッセージが出ますが、そのまま待っている間に、表示された URL（`https://github.com/login/device`）をホストのブラウザで開いてコードを入力してください。
+VM にはキーリング（Secret Service）が無いため、トークンはファイルに平文で保存されます（`Authentication credentials saved in plain text` と表示されます。保存先は `gh auth status` で確認できます）。
+
+コミットするには、Git のユーザ名とメールアドレスも設定してください。
+
+```sh
+git config --global user.name "<名前>"
+git config --global user.email "<メールアドレス>"
+```
+
 ### GitHub Copilot CLI
 
 ```sh
@@ -175,6 +224,7 @@ copilot
 起動したら `/login` を実行します。SSH 経由の環境ではデバイスコードフローになるので、表示された URL をホストのブラウザで開き、コードを入力してください。
 VM にはキーリング（libsecret）が入っていないため、トークンを `~/.copilot/config.json` に平文で保存するかどうか確認されます。
 Fine-grained PAT を環境変数（`COPILOT_GITHUB_TOKEN` など）で渡す方法もあります（[認証のドキュメント](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli)）。
+ほかに認証情報（環境変数や `/login` で保存したトークン）が無いときは、Copilot CLI は gh のトークンを自動で使います（優先度は最も低い）。
 
 ### Antigravity CLI
 
@@ -233,7 +283,7 @@ sudo docker run --rm hello-world
 | herdr | `herdr update` |
 | Antigravity CLI | 自動で更新される |
 | GitHub Copilot CLI | `copilot update` |
-| Docker Engine | `sudo apt-get update && sudo apt-get upgrade` |
+| 基本的なツール・GitHub CLI・Docker Engine（apt パッケージ） | `sudo apt-get update && sudo apt-get upgrade` |
 
 ## トラブルシューティング
 
@@ -267,7 +317,8 @@ limactl start --timeout=30m ./coding-sandbox.yaml
 - テンプレートでは、ホストのディレクトリのマウント、SSH エージェントの転送、ホストの `~/.ssh/*.pub` の読み込みを、いずれも無効にしています。マウントだけは Lima のグローバル設定から混入しうるため、起動時に検出しています（[ホストのマウントが混入しないように](#ホストのマウントが混入しないように)）
 - Lima の既定動作により、ゲスト内で `127.0.0.1` や `0.0.0.0` に bind されたポートは、ホストの `127.0.0.1` に転送されます（開発中の Web アプリをホストのブラウザで確認できますが、エージェントが起動したサーバにもホストからアクセスできる状態になります）
 - VM からはインターネットに接続できます。また、`host.lima.internal`（`192.168.5.2`）はホストのループバックアドレスにつながっているため、ホストで `127.0.0.1` に bind しているサービス（ローカルのデータベースや開発サーバ、ほかの Lima インスタンスから転送されているポートなど）にも VM から接続できます。認証のないサービスをホストで動かしているときは注意してください（VM 内のファイアウォールで遮断しても、エージェントは sudo で解除できます）
-- 各 CLI の認証情報は VM 内に保存されます（Copilot CLI は平文で保存される場合があります）。不要になったら `limactl delete` で VM ごと削除してください
+- 各 CLI の認証情報は VM 内に保存されます（Copilot CLI と gh は平文で保存される場合があります）。不要になったら `limactl delete` で VM ごと削除してください
+- gh でログインすると、そのトークン（既定のスコープは `repo`・`read:org`・`gist`）は、VM 内で同じユーザとして動くエージェントからも使えます。エージェントは、あなたの GitHub アカウントでアクセスできるリポジトリに push したり、issue や PR を作ったりできます。権限を絞りたいときは、対象のリポジトリと権限を限定した fine-grained PAT を、`gh auth login` の代わりに環境変数 `GH_TOKEN` で渡してください（`GH_TOKEN` は Copilot CLI の `/login` で保存したトークンよりも優先されるため、Copilot CLI が使うトークンも変わる点に注意してください）
 
 ## 開発
 
