@@ -52,6 +52,9 @@ provision:
 - mode: user
   file: provision/copilot-cli.sh
 
+# probes は上から順に、ホストから SSH 経由で確認される。
+# Lima 2.2.0 では probes の file: がインスタンスの作成時に取り込まれない（provision の file: は取り込まれる）ため、
+# スクリプトはここに直接書く。scripts/lint.sh がこれらを取り出して shellcheck で検査する。
 probes:
 - description: no host directories to be mounted
   script: |
@@ -72,6 +75,8 @@ probes:
     #!/bin/bash
     set -eu -o pipefail
     for bin in herdr agy copilot; do
+      # $1 は内側の bash で展開させる
+      # shellcheck disable=SC2016
       if ! timeout 30s bash -c 'until [ -x "$1" ]; do sleep 3; done' _ "$HOME/.local/bin/$bin"; then
         echo >&2 "$bin is not installed yet"
         exit 1
