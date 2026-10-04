@@ -11,7 +11,7 @@
 | ホストのディレクトリ | マウントしない（`mounts: []`）。Lima のグローバル設定から混入した場合は、起動時に検出してエラーにする（[後述](#ホストのマウントが混入しないように)） |
 | ユーザ | ホストと同じ名前・UID の通常ユーザ（非 root）。ホームは `/home/<user>.guest`。パスワードなしで sudo できる（Lima の既定） |
 | リソース | 4 CPU / 8 GiB メモリ / 100 GiB ディスク（ディスクはスパースファイルなので、実際に使った分だけ消費する） |
-| ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、Docker Engine（`sudo docker` で使う）、Git のユーザ設定・コミット署名鍵 |
+| ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、Docker Engine（`sudo docker` で使う）、Git のユーザ設定・コミット署名鍵、ターミナル（`$TERM`）の terminfo の代替設定 |
 
 基本的なツールは Ubuntu のリポジトリから、それ以外の各ソフトウェアは公式ドキュメントの手順でインストールします。
 
@@ -71,6 +71,7 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 ├── coding-sandbox.yaml        # Lima テンプレート（probes もここに書いてある）
 ├── provision/                 # プロビジョニングスクリプト（起動のたびに実行されるため冪等に作ってある）
 │   ├── base-packages.sh       # mode: system  基本的なツール（Ubuntu のリポジトリ）
+│   ├── terminfo-fallback.sh   # mode: system  $TERM の terminfo が無いときの代替
 │   ├── github-cli.sh          # mode: system  GitHub CLI
 │   ├── docker-engine.sh       # mode: system  Docker Engine
 │   ├── git-config.sh          # mode: user    Git のユーザ設定とコミット署名
@@ -199,6 +200,14 @@ limactl shell coding-sandbox
 
 ホストのディレクトリはマウントしていないので、ゲストのホーム（`/home/<user>.guest`）でログインシェルが起動します。
 `~/.local/bin` は Ubuntu 既定の `~/.profile` によって PATH に追加されます。
+
+ホストの `$TERM`（環境変数）は ssh 経由でそのまま VM に渡されます。VM に terminfo が無い値（Ghostty の `xterm-ghostty` など）のときは、`less`（`git log` や `man` のページャ）が `WARNING: terminal is not fully functional` と表示するのを防ぐため、`/etc/profile.d/terminfo-fallback.sh` が自動で `TERM=xterm-256color` に置き換えます（herdr のペインの中はもともと `xterm-256color` なので置き換えません）。
+
+Ghostty 固有の機能まで使いたいときは、ホストの terminfo を VM にコピーしてください（`~/.terminfo` に保存され、以後は置き換えなくなります。VM を作り直したときは再実行してください）:
+
+```sh
+infocmp -x xterm-ghostty | limactl shell coding-sandbox tic -x -
+```
 
 ### 停止・削除
 
