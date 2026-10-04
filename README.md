@@ -11,7 +11,7 @@
 | ホストのディレクトリ | マウントしない（`mounts: []`）。Lima のグローバル設定から混入した場合は、起動時に検出してエラーにする（[後述](#ホストのマウントが混入しないように)） |
 | ユーザ | ホストと同じ名前・UID の通常ユーザ（非 root）。ホームは `/home/<user>.guest`。パスワードなしで sudo できる（Lima の既定） |
 | リソース | 4 CPU / 8 GiB メモリ / 100 GiB ディスク（ディスクはスパースファイルなので、実際に使った分だけ消費する） |
-| ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、Docker Engine（`sudo docker` で使う） |
+| ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、Docker Engine（`sudo docker` で使う）、Git のユーザ設定・コミット署名鍵 |
 
 基本的なツールは Ubuntu のリポジトリから、それ以外の各ソフトウェアは公式ドキュメントの手順でインストールします。
 
@@ -20,6 +20,7 @@
 | 基本的なツール | Ubuntu のリポジトリ（apt） | `provision/base-packages.sh`（root） | apt パッケージ |
 | GitHub CLI | [Installing gh on Linux and BSD](https://github.com/cli/cli/blob/trunk/docs/install_linux.md#debian)（apt リポジトリ） | `provision/github-cli.sh`（root） | apt パッケージ |
 | Docker Engine | [Install Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubuntu/)（apt リポジトリ） | `provision/docker-engine.sh`（root） | apt パッケージ |
+| Git 設定・コミット署名 | - | `provision/git-config.sh` | `~/.ssh/id_ed25519_signing`、`~/.gitconfig` |
 | herdr | [Install](https://herdr.dev/docs/install/) | `provision/herdr.sh` | `~/.local/bin/herdr` |
 | Antigravity CLI | [Installation and auth](https://antigravity.google/docs/cli/install) | `provision/antigravity-cli.sh` | `~/.local/bin/agy` |
 | GitHub Copilot CLI | [Installing GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)（install スクリプト） | `provision/copilot-cli.sh` | `~/.local/bin/copilot` |
@@ -69,6 +70,7 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── base-packages.sh       # mode: system  基本的なツール（Ubuntu のリポジトリ）
 │   ├── github-cli.sh          # mode: system  GitHub CLI
 │   ├── docker-engine.sh       # mode: system  Docker Engine
+│   ├── git-config.sh          # mode: user    Git のユーザ設定とコミット署名
 │   ├── herdr.sh               # mode: user
 │   ├── antigravity-cli.sh     # mode: user
 │   └── copilot-cli.sh         # mode: user
@@ -90,14 +92,27 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 limactl start ./coding-sandbox.yaml
 ```
 
+Git のユーザ名とメールアドレスをあらかじめ設定するには、作成時に `--param` で渡します（ホストの Git 設定をそのまま渡すこともできます）:
+
+```sh
+limactl start \
+  --param "gitUserName=$(git config --global user.name)" \
+  --param "gitUserEmail=$(git config --global user.email)" \
+  ./coding-sandbox.yaml
+```
+
+> [!NOTE]
+> `limactl start --param` はカンマで値を区切るため、名前にカンマが含まれる場合は `limactl create --param "gitUserName=..." --param "gitUserEmail=..." ./coding-sandbox.yaml` で作成してから `limactl start coding-sandbox` で起動してください。
+
 インスタンス名は `coding-sandbox` です（変えるときは `--name=<名前>` を付ける）。
 初回はイメージのダウンロードとプロビジョニングがあるため数分かかります。
-起動時に `probes` で次の 4 点を確認し、すべて満たされた時点で完了します。
+起動時に `probes` で次の 5 点を確認し、すべて満たされた時点で完了します。
 
 1. ホストのディレクトリがマウントされていないこと
 2. 基本的なツール（git、gh など）がインストールされていること
 3. herdr / Antigravity CLI / GitHub Copilot CLI がインストールされていること
 4. Docker Engine が動いていること
+5. Git のコミット署名用 SSH 鍵が作成されていること
 
 > [!NOTE]
 > `coding-sandbox.yaml` と `provision/*.sh` の内容は、インスタンスの作成時に `~/.lima/coding-sandbox/lima.yaml` に取り込まれます。
@@ -208,12 +223,40 @@ gh auth login
 認証方法で `Login with a web browser` を選ぶと、ワンタイムコードが表示されます。Enter を押すと、VM にはブラウザが無いため開けなかったというメッセージが出ますが、そのまま待っている間に、表示された URL（`https://github.com/login/device`）をホストのブラウザで開いてコードを入力してください。
 VM にはキーリング（Secret Service）が無いため、トークンはファイルに平文で保存されます（`Authentication credentials saved in plain text` と表示されます。保存先は `gh auth status` で確認できます）。
 
-コミットするには、Git のユーザ名とメールアドレスも設定してください。
+Git のユーザ名とメールアドレスは作成時に `--param` で渡していれば設定済みです。未指定で作成した場合は [Git のコミット署名](#git-のコミット署名) を参照して設定してください。
+
+### Git のコミット署名
+
+VM 内の Git は、すべてのコミットとタグに署名するよう設定されています（`commit.gpgsign=true`、署名鍵は `~/.ssh/id_ed25519_signing`）。
+GitHub 上でコミットに **Verified** バッジを表示させるには、公開鍵を GitHub に Signing Key として登録します。
+
+1. ホストから次のコマンドで公開鍵を表示します:
+   ```sh
+   limactl shell coding-sandbox cat .ssh/id_ed25519_signing.pub
+   ```
+2. ホストのブラウザで GitHub の [SSH and GPG keys](https://github.com/settings/keys) を開き、**New SSH key** をクリックします。
+3. **Key type** で **Signing Key** を選択し（Authentication Key ではなく Signing Key）、表示された公開鍵を貼り付けて登録します。
+4. 設定したメールアドレス（`git config --global user.email`）が、GitHub アカウントに登録され検証済み（Verified）になっていることを確認してください。
+
+VM 内での署名の検証確認:
 
 ```sh
-git config --global user.name "<名前>"
-git config --global user.email "<メールアドレス>"
+# テスト用リポジトリでコミットを作成して検証する
+cd "$(mktemp -d)" && git init -q && git commit -q --allow-empty -m "test commit"
+git log --show-signature -1
 ```
+
+`Good "git" signature ...` と表示されれば、VM 内での署名とローカル検証が正常に機能しています。GitHub に push すると、GitHub 上でも **Verified** と表示されます。
+
+> [!NOTE]
+> VM 作成時に `--param` を指定しなかった場合は、VM 内で手動でユーザ名・メールアドレスを設定し、ローカル検証用設定を作成してください:
+> ```sh
+> git config --global user.name "<名前>"
+> git config --global user.email "<メールアドレス>"
+> mkdir -p ~/.config/git
+> printf '%s namespaces="git" %s\n' "$(git config --global user.email)" "$(cat ~/.ssh/id_ed25519_signing.pub)" > ~/.config/git/allowed_signers
+> git config --global gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers
+> ```
 
 ### GitHub Copilot CLI
 
@@ -319,6 +362,7 @@ limactl start --timeout=30m ./coding-sandbox.yaml
 - VM からはインターネットに接続できます。また、`host.lima.internal`（`192.168.5.2`）はホストのループバックアドレスにつながっているため、ホストで `127.0.0.1` に bind しているサービス（ローカルのデータベースや開発サーバ、ほかの Lima インスタンスから転送されているポートなど）にも VM から接続できます。認証のないサービスをホストで動かしているときは注意してください（VM 内のファイアウォールで遮断しても、エージェントは sudo で解除できます）
 - 各 CLI の認証情報は VM 内に保存されます（Copilot CLI と gh は平文で保存される場合があります）。不要になったら `limactl delete` で VM ごと削除してください
 - gh でログインすると、そのトークン（既定のスコープは `repo`・`read:org`・`gist`）は、VM 内で同じユーザとして動くエージェントからも使えます。エージェントは、あなたの GitHub アカウントでアクセスできるリポジトリに push したり、issue や PR を作ったりできます。権限を絞りたいときは、対象のリポジトリと権限を限定した fine-grained PAT を、`gh auth login` の代わりに環境変数 `GH_TOKEN` で渡してください（`GH_TOKEN` は Copilot CLI の `/login` で保存したトークンよりも優先されるため、Copilot CLI が使うトークンも変わる点に注意してください）
+- Git のコミット署名鍵（`~/.ssh/id_ed25519_signing`）には、エージェントが非対話でコミットできるようパスフレーズを付けていません。そのため VM 内のエージェントもあなたの署名付きコミットを作成できます。GitHub の Verified バッジは「この VM で作成されたコミットである」ことを示し、人間が直接書いたことの証明にはなりません。不要になった VM を削除する際は、GitHub の [SSH and GPG keys](https://github.com/settings/keys) から対応する Signing Key も削除してください
 
 ## 開発
 
