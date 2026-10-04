@@ -1,0 +1,103 @@
+# コーディングエージェント用サンドボックス VM（Lima テンプレート）
+#
+#   $ limactl start ./coding-sandbox.yaml
+#   $ limactl shell coding-sandbox
+#
+# - Ubuntu 26.04 LTS
+# - ホストのディレクトリは一切マウントしない
+# - herdr / Antigravity CLI / GitHub Copilot CLI / Docker Engine を公式手順でインストールする
+# - エージェントは非 root の通常ユーザで実行する（Docker は `sudo docker` で使う）
+#
+# 詳細は README.md を参照。
+
+# template:_images/ubuntu-26.04 は Lima 2.2.0 から同梱
+minimumLimaVersion: 2.2.0
+
+base:
+# template:_default/mounts（ホストのホームディレクトリをマウントする設定）は意図的に含めない
+- template:_images/ubuntu-26.04
+
+cpus: 4
+memory: 8GiB
+disk: 100GiB
+
+# ホストのディレクトリは一切マウントしない。
+# ただし $LIMA_HOME/_config/default.yaml・override.yaml（作成時は base.yaml も）にマウントの設定があると、
+# Lima はそれを結合してしまう。その場合は先頭の probe で検出し、起動をエラーにする（README.md を参照）。
+mounts: []
+
+# containerd は Docker Engine が管理するため、Lima 同梱の containerd / nerdctl は使わない
+containerd:
+  system: false
+  user: false
+
+ssh:
+  # ホストの SSH エージェントや ~/.ssh/*.pub をゲストに渡さない（いずれも Lima の既定値だが明示する）
+  forwardAgent: false
+  loadDotSSHPubKeys: false
+
+# user は Lima の既定値を使う:
+#   ホストと同じ名前・UID の通常ユーザ（非 root）。ホームは /home/<user>.guest、パスワードなしで sudo できる。
+
+# Lima はすべての mode: system を実行してから mode: user を実行する。
+# どのスクリプトも起動のたびに実行されるため、冪等に作ってある。
+# provision と probes のスクリプトは Go テンプレートとして展開されるため、`{{` を書かないこと。
+provision:
+- mode: system
+  file: provision/docker-engine.sh
+- mode: user
+  file: provision/herdr.sh
+- mode: user
+  file: provision/antigravity-cli.sh
+- mode: user
+  file: provision/copilot-cli.sh
+
+probes:
+- description: no host directories to be mounted
+  script: |
+    #!/bin/bash
+    set -eu -o pipefail
+    # findmnt -t は未知のファイルシステム名を無視して全件を返すことがあるため、/proc/self/mounts を直接調べる
+    mounts=$(awk '$3 == "virtiofs" || $3 == "9p" || $3 == "fuse.sshfs"' /proc/self/mounts)
+    if [ -n "${mounts}" ]; then
+      printf '%s\n' "host directories are mounted in the guest:" "${mounts}" >&2
+      exit 1
+    fi
+  hint: |
+    Host directories must not be mounted in this instance. Stop it without using it, and check
+    $LIMA_HOME/_config/default.yaml, override.yaml and base.yaml (LIMA_HOME defaults to ~/.lima)
+    and the --mount option. See "README.md" for details.
+- description: herdr, Antigravity CLI and GitHub Copilot CLI to be installed
+  script: |
+    #!/bin/bash
+    set -eu -o pipefail
+    for bin in herdr agy copilot; do
+      if ! timeout 30s bash -c 'until [ -x "$1" ]; do sleep 3; done' _ "$HOME/.local/bin/$bin"; then
+        echo >&2 "$bin is not installed yet"
+        exit 1
+      fi
+    done
+  hint: See "/var/log/cloud-init-output.log" in the guest
+- description: Docker Engine to be running
+  script: |
+    #!/bin/bash
+    set -eu -o pipefail
+    # パイプを通さず、docker info の終了ステータスで判定する（デーモンに接続できなければ失敗する）
+    if ! timeout 30s bash -c 'until sudo -n docker info >/dev/null 2>&1; do sleep 3; done'; then
+      echo >&2 "Docker Engine is not installed or not running yet"
+      exit 1
+    fi
+  hint: See "/var/log/cloud-init-output.log" in the guest
+
+message: |
+  VM にシェルで入るには:
+  ------
+  limactl shell {{.Name}}
+  ------
+  ホストのディレクトリはマウントしていません。ホスト側のプロジェクトで作業するときは、
+  VM 内で git clone するか、ホストのプロジェクトディレクトリで次のコマンドを実行してください:
+  ------
+  limactl shell --sync . {{.Name}}
+  ------
+  インストール済み: herdr, agy (Antigravity CLI), copilot (GitHub Copilot CLI), docker（`sudo docker` で使う）
+  初回の認証手順は README.md を参照してください。
