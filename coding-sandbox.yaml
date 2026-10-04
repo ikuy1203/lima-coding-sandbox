@@ -26,6 +26,7 @@ disk: 100GiB
 # Git のユーザ名とメールアドレス（provision/git-config.sh で git config --global に設定する）。
 # リポジトリに個人の情報を書かないよう、既定は空にして、作成時に --param で渡す:
 #   $ limactl start --param "gitUserName=<名前>" --param "gitUserEmail=<メールアドレス>" ./coding-sandbox.yaml
+# make start で作成する場合は、.env に書いた値（無ければホストの git config --global の値）が渡される。
 # provision のスクリプトの中では $PARAM_gitUserName / $PARAM_gitUserEmail として参照できる。
 param:
   gitUserName: ""

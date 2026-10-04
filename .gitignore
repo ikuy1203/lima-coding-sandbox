@@ -1,0 +1,3 @@
+# 個人の設定（.env.example をコピーして作る。make start ENV_FILE=work.env のように別名でも使える）
+.env
+*.env
