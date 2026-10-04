@@ -2,6 +2,7 @@
 #
 #   $ make start    # 作成（初回のみ）と起動
 #   $ make shell    # シェルに入る（停止していれば起動する）
+#   $ make herdr    # herdr のセッションに入る（停止していれば起動する）
 #   $ make help     # ターゲットの一覧
 #
 # 変数はコマンドラインで上書きできる:
@@ -43,7 +44,7 @@ endef
 
 .NOTPARALLEL:
 .DEFAULT_GOAL := help
-.PHONY: help create start shell stop restart status delete recreate pubkey logs lint
+.PHONY: help create start shell herdr stop restart status delete recreate pubkey logs lint
 
 help: ## ターゲットの一覧を表示する
 	@grep -E '^[a-z-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F ':.*## ' '{ printf "  make %-10s %s\n", $$1, $$2 }'
@@ -82,6 +83,10 @@ start: create ## インスタンスを起動する（無ければ作成する）
 
 shell: start ## シェルに入る（停止していれば起動する）
 	limactl shell $(NAME)
+
+# limactl shell はコマンドを指定してもログインシェルで実行するため、~/.local/bin の herdr が見つかる
+herdr: start ## herdr のセッションに入る（無ければ作る。停止していれば起動する）
+	limactl shell $(NAME) herdr
 
 stop: ## インスタンスを停止する
 	@$(get-status); \
