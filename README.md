@@ -34,12 +34,16 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 
 ```
 .
-├── coding-sandbox.yaml        # Lima テンプレート
-└── provision/                 # プロビジョニングスクリプト（起動のたびに実行されるため冪等に作ってある）
-    ├── docker-engine.sh       # mode: system  Docker Engine
-    ├── herdr.sh               # mode: user
-    ├── antigravity-cli.sh     # mode: user
-    └── copilot-cli.sh         # mode: user
+├── README.md
+├── coding-sandbox.yaml        # Lima テンプレート（probes もここに書いてある）
+├── provision/                 # プロビジョニングスクリプト（起動のたびに実行されるため冪等に作ってある）
+│   ├── docker-engine.sh       # mode: system  Docker Engine
+│   ├── herdr.sh               # mode: user
+│   ├── antigravity-cli.sh     # mode: user
+│   └── copilot-cli.sh         # mode: user
+├── scripts/
+│   └── lint.sh                # テンプレートとスクリプトの検査（CI でも実行する）
+└── .github/workflows/ci.yml   # GitHub Actions（scripts/lint.sh を実行する）
 ```
 
 ## 前提
@@ -66,6 +70,22 @@ limactl start ./coding-sandbox.yaml
 > [!NOTE]
 > `coding-sandbox.yaml` と `provision/*.sh` の内容は、インスタンスの作成時に `~/.lima/coding-sandbox/lima.yaml` に取り込まれます。
 > 変更を反映するには、インスタンスを作り直してください（`limactl delete coding-sandbox` → `limactl start ./coding-sandbox.yaml`）。
+
+### CPU・メモリ・ディスクを変える
+
+既定は 4 CPU / 8 GiB メモリ / 100 GiB ディスクです。作成時に変えるには、`limactl start` にオプションを付けます（メモリとディスクの単位は GiB）。
+
+```sh
+limactl start --cpus=8 --memory=16 --disk=200 ./coding-sandbox.yaml
+```
+
+作成後に CPU とメモリを変えるには、VM を停止してから `limactl edit` を使います。
+
+```sh
+limactl stop coding-sandbox
+limactl edit coding-sandbox --cpus=8 --memory=16
+limactl start coding-sandbox
+```
 
 ### シェルに入る
 
@@ -120,7 +140,7 @@ limactl list coding-sandbox --format '{{json .Config.Mounts}}'
 マウントが見つかったときの直し方:
 
 - `default.yaml` / `override.yaml` が原因の場合: 該当するマウントの設定を消してから、`limactl stop coding-sandbox` → `limactl start coding-sandbox` で起動し直す
-- `base.yaml` や `limactl start --mount` が原因の場合: インスタンスの `lima.yaml` に取り込まれているので、インスタンスを作り直す
+- `base.yaml` や `limactl start --mount` が原因の場合: インスタンスの `lima.yaml` に取り込まれているので、`limactl stop coding-sandbox` → `limactl edit coding-sandbox --mount-none` → `limactl start coding-sandbox` で、インスタンスの設定からマウントを消す（またはインスタンスを作り直す）
 
 ## プロジェクトを VM に持ち込む
 
@@ -136,6 +156,7 @@ limactl list coding-sandbox --format '{{json .Config.Mounts}}'
    ```
    - ホストとゲストの両方に rsync が必要です（ゲストのイメージには同梱されています。ホストは macOS 標準の rsync（openrsync）で動作を確認しました）
    - ホスト側のディレクトリは 4 階層以上の深さが必要です（例: `/Users/<user>/src/my-project`）
+   - インスタンスにホストのマウントがあると、Lima は `--sync` を拒否します。エラーメッセージでは `--mount-none` を付けて起動するよう案内されますが、`default.yaml` / `override.yaml` 由来のマウントはそれでは消えません（[ホストのマウントが混入しないように](#ホストのマウントが混入しないように)を参照）
    - ゲスト側では `~/<ホストの絶対パス>`（例: `/home/<user>.guest/Users/<user>/src/my-project`）に展開されます
    - ⚠️ `--tty=false`（`-y`）を付けたときやパイプ経由で実行したときは、**確認なしで**ホストに書き戻されます。`rsync --delete` で同期するため、ゲストで削除したファイルはホストからも削除されます
 3. **`limactl copy` でコピーする**
@@ -225,10 +246,37 @@ sudo docker run --rm hello-world
 limactl shell coding-sandbox sudo tail -n 100 /var/log/cloud-init-output.log
 ```
 
+プロビジョニングスクリプトは VM を起動するたびに実行され、インストール済みのソフトウェアは飛ばすように作ってあります。ネットワークの一時的な障害などで失敗したときは、VM を起動し直すと、インストールされていないものだけをもう一度インストールします。
+
+```sh
+limactl stop coding-sandbox
+limactl start coding-sandbox
+```
+
+回線が遅く、初回のプロビジョニングが 10 分以内に終わらないときは、タイムアウトを延ばして作成してください。
+
+```sh
+limactl start --timeout=30m ./coding-sandbox.yaml
+```
+
+タイムアウトでエラーになった後も VM は動き続け、プロビジョニングも続きます。終わったかどうかは上のログで確認できます。
+
 ## セキュリティ上の注意
 
 - 隔離の境界は VM です。VM 内のユーザはパスワードなしで sudo できるため、エージェントも VM 内では root 相当の操作ができます
 - テンプレートでは、ホストのディレクトリのマウント、SSH エージェントの転送、ホストの `~/.ssh/*.pub` の読み込みを、いずれも無効にしています。マウントだけは Lima のグローバル設定から混入しうるため、起動時に検出しています（[ホストのマウントが混入しないように](#ホストのマウントが混入しないように)）
 - Lima の既定動作により、ゲスト内で `127.0.0.1` や `0.0.0.0` に bind されたポートは、ホストの `127.0.0.1` に転送されます（開発中の Web アプリをホストのブラウザで確認できますが、エージェントが起動したサーバにもホストからアクセスできる状態になります）
-- VM からはインターネットに接続できます。また、`host.lima.internal` を通じてホストにもアクセスできます
+- VM からはインターネットに接続できます。また、`host.lima.internal`（`192.168.5.2`）はホストのループバックアドレスにつながっているため、ホストで `127.0.0.1` に bind しているサービス（ローカルのデータベースや開発サーバ、ほかの Lima インスタンスから転送されているポートなど）にも VM から接続できます。認証のないサービスをホストで動かしているときは注意してください（VM 内のファイアウォールで遮断しても、エージェントは sudo で解除できます）
 - 各 CLI の認証情報は VM 内に保存されます（Copilot CLI は平文で保存される場合があります）。不要になったら `limactl delete` で VM ごと削除してください
+
+## 開発
+
+`scripts/lint.sh` で、テンプレートの検証（`limactl validate`）と、provision スクリプトおよびテンプレートに書いた probes の shellcheck を実行します（shellcheck は `brew install shellcheck` でインストールする）。
+
+```sh
+./scripts/lint.sh
+```
+
+GitHub Actions（`.github/workflows/ci.yml`）でも、main ブランチへの push と pull request のたびに同じスクリプトを実行します。Lima は、`minimumLimaVersion` のバージョンと最新のリリースの 2 つで確認します。
+
+probes は `file:` で別のファイルに分けず、`coding-sandbox.yaml` に直接書いています。Lima 2.2.0 では、probes の `file:` がインスタンスの作成時に取り込まれないためです（provision の `file:` は取り込まれます）。
