@@ -8,6 +8,7 @@
 # - 基本的なツール（git / gh / build-essential / ripgrep / Python の venv・pipx / Node.js など）をインストールする
 # - herdr / Antigravity CLI / GitHub Copilot CLI / Docker Engine を公式手順でインストールする
 # - Git のユーザ名・メールアドレス（--param で渡す）と、SSH 鍵によるコミット署名を設定する
+# - ホストの $TERM の terminfo が VM に無いとき（Ghostty など）は TERM=xterm-256color にする
 # - エージェントは非 root の通常ユーザで実行する（Docker は `sudo docker` で使う）
 #
 # 詳細は README.md を参照。
@@ -56,6 +57,8 @@ ssh:
 provision:
 - mode: system
   file: provision/base-packages.sh
+- mode: system
+  file: provision/terminfo-fallback.sh
 - mode: system
   file: provision/github-cli.sh
 - mode: system
