@@ -7,6 +7,7 @@
 # - ホストのディレクトリは一切マウントしない
 # - 基本的なツール（git / gh / build-essential / ripgrep / Python の venv・pipx / Node.js など）をインストールする
 # - herdr / Antigravity CLI / GitHub Copilot CLI / Docker Engine を公式手順でインストールする
+# - Git のユーザ名・メールアドレス（--param で渡す）と、SSH 鍵によるコミット署名を設定する
 # - エージェントは非 root の通常ユーザで実行する（Docker は `sudo docker` で使う）
 #
 # 詳細は README.md を参照。
@@ -21,6 +22,14 @@ base:
 cpus: 4
 memory: 8GiB
 disk: 100GiB
+
+# Git のユーザ名とメールアドレス（provision/git-config.sh で git config --global に設定する）。
+# リポジトリに個人の情報を書かないよう、既定は空にして、作成時に --param で渡す:
+#   $ limactl start --param "gitUserName=<名前>" --param "gitUserEmail=<メールアドレス>" ./coding-sandbox.yaml
+# provision のスクリプトの中では $PARAM_gitUserName / $PARAM_gitUserEmail として参照できる。
+param:
+  gitUserName: ""
+  gitUserEmail: ""
 
 # ホストのディレクトリは一切マウントしない。
 # ただし $LIMA_HOME/_config/default.yaml・override.yaml（作成時は base.yaml も）にマウントの設定があると、
@@ -50,6 +59,8 @@ provision:
   file: provision/github-cli.sh
 - mode: system
   file: provision/docker-engine.sh
+- mode: user
+  file: provision/git-config.sh
 - mode: user
   file: provision/herdr.sh
 - mode: user
@@ -112,6 +123,18 @@ probes:
       exit 1
     fi
   hint: See "/var/log/cloud-init-output.log" in the guest
+- description: SSH key for Git commit signing to be created
+  script: |
+    #!/bin/bash
+    set -eu -o pipefail
+    # provision/git-config.sh で作る署名用の鍵
+    # $1 は内側の bash で展開させる
+    # shellcheck disable=SC2016
+    if ! timeout 30s bash -c 'until [ -f "$1" ]; do sleep 3; done' _ "$HOME/.ssh/id_ed25519_signing.pub"; then
+      echo >&2 "SSH key for Git commit signing is not created yet"
+      exit 1
+    fi
+  hint: See "/var/log/cloud-init-output.log" in the guest
 
 message: |
   VM にシェルで入るには:
@@ -126,4 +149,9 @@ message: |
   インストール済み:
   - git, gh, gcc / make, rg, fdfind, python3（venv / pip3 / pipx）, node / npm などの基本的なツール
   - herdr, agy (Antigravity CLI), copilot (GitHub Copilot CLI), docker（`sudo docker` で使う）
+  コミットは SSH 鍵で署名されます。GitHub で Verified と表示させるには、次の公開鍵を
+  https://github.com/settings/ssh/new で「Key type: Signing Key」として登録してください:
+  ------
+  limactl shell {{.Name}} cat .ssh/id_ed25519_signing.pub
+  ------
   初回の認証手順は README.md を参照してください。
