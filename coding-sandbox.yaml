@@ -6,7 +6,7 @@
 # - Ubuntu 26.04 LTS
 # - ホストのディレクトリは一切マウントしない
 # - 基本的なツール（git / gh / build-essential / ripgrep / Python の venv・pipx / Node.js など）をインストールする
-# - herdr / Antigravity CLI / GitHub Copilot CLI / Docker Engine を公式手順でインストールする
+# - herdr / Antigravity CLI / GitHub Copilot CLI / mise / Docker Engine を公式手順でインストールする
 # - Git のユーザ名・メールアドレス（--param で渡す）と、SSH 鍵によるコミット署名を設定する
 # - ホストの $TERM の terminfo が VM に無いとき（Ghostty など）は TERM=xterm-256color にする
 # - VM の中で再生した音を、ホストのスピーカーから鳴らす（再生のみ。マイクは使えない）
@@ -82,6 +82,8 @@ provision:
   file: provision/antigravity-cli.sh
 - mode: user
   file: provision/copilot-cli.sh
+- mode: user
+  file: provision/mise.sh
 
 # probes は上から順に、ホストから SSH 経由で確認される。
 # Lima 2.2.0 では probes の file: がインスタンスの作成時に取り込まれない（provision の file: は取り込まれる）ため、
@@ -115,11 +117,11 @@ probes:
       fi
     done
   hint: See "/var/log/cloud-init-output.log" in the guest
-- description: herdr, Antigravity CLI and GitHub Copilot CLI to be installed
+- description: herdr, Antigravity CLI, GitHub Copilot CLI and mise to be installed
   script: |
     #!/bin/bash
     set -eu -o pipefail
-    for bin in herdr agy copilot; do
+    for bin in herdr agy copilot mise; do
       # $1 は内側の bash で展開させる
       # shellcheck disable=SC2016
       if ! timeout 30s bash -c 'until [ -x "$1" ]; do sleep 3; done' _ "$HOME/.local/bin/$bin"; then
@@ -197,7 +199,7 @@ message: |
   ------
   インストール済み:
   - git, gh, gcc / make, rg, fdfind, python3（venv / pip3 / pipx）, node / npm などの基本的なツール
-  - herdr, agy (Antigravity CLI), copilot (GitHub Copilot CLI), docker（`sudo docker` で使う）
+  - herdr, agy (Antigravity CLI), copilot (GitHub Copilot CLI), mise, docker（`sudo docker` で使う）
   - aplay, mpg123 など（alsa-utils, mpg123）。VM の中で再生した音はホストのスピーカーから鳴ります
   コミットは SSH 鍵で署名されます。GitHub で Verified と表示させるには、次の公開鍵を
   https://github.com/settings/ssh/new で「Key type: Signing Key」として登録してください:

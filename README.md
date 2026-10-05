@@ -12,7 +12,7 @@
 | ユーザ | ホストと同じ名前・UID の通常ユーザ（非 root）。ホームは `/home/<user>.guest`。パスワードなしで sudo できる（Lima の既定） |
 | リソース | 4 CPU / 8 GiB メモリ / 100 GiB ディスク（ディスクはスパースファイルなので、実際に使った分だけ消費する） |
 | 音声 | VM の中で再生した音を、ホストのスピーカーから鳴らす（再生のみ。マイクは使えない。[後述](#音声)） |
-| ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、Docker Engine（`sudo docker` で使う）、Git のユーザ設定・コミット署名鍵、ターミナル（`$TERM`）の terminfo の代替設定 |
+| ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、mise、Docker Engine（`sudo docker` で使う）、Git のユーザ設定・コミット署名鍵、ターミナル（`$TERM`）の terminfo の代替設定 |
 
 基本的なツールは Ubuntu のリポジトリから、それ以外の各ソフトウェアは公式ドキュメントの手順でインストールします。
 
@@ -26,6 +26,7 @@
 | herdr | [Install](https://herdr.dev/docs/install/) | `provision/herdr.sh` | `~/.local/bin/herdr` |
 | Antigravity CLI | [Installation and auth](https://antigravity.google/docs/cli/install) | `provision/antigravity-cli.sh` | `~/.local/bin/agy` |
 | GitHub Copilot CLI | [Installing GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)（install スクリプト） | `provision/copilot-cli.sh` | `~/.local/bin/copilot` |
+| mise | [Installing mise](https://mise.jdx.dev/installing-mise.html)（`https://mise.run/bash`） | `provision/mise.sh` | `~/.local/bin/mise`、`~/.bashrc`（activate の 1 行を追記。[後述](#mise)） |
 
 > [!NOTE]
 > Antigravity CLI だけは、公式のコマンドに `curl --compressed` を追加しています。
@@ -80,7 +81,8 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── git-config.sh          # mode: user    Git のユーザ設定とコミット署名
 │   ├── herdr.sh               # mode: user
 │   ├── antigravity-cli.sh     # mode: user
-│   └── copilot-cli.sh         # mode: user
+│   ├── copilot-cli.sh         # mode: user
+│   └── mise.sh                # mode: user
 ├── scripts/
 │   └── lint.sh                # テンプレートとスクリプトの検査（CI でも実行する）
 └── .github/workflows/ci.yml   # GitHub Actions（scripts/lint.sh を実行する）
@@ -173,7 +175,7 @@ limactl start \
 
 1. ホストのディレクトリがマウントされていないこと
 2. 基本的なツール（git、gh など）がインストールされていること
-3. herdr / Antigravity CLI / GitHub Copilot CLI がインストールされていること
+3. herdr / Antigravity CLI / GitHub Copilot CLI / mise がインストールされていること
 4. Docker Engine が動いていること
 5. 音声を再生できること（`aplay` と `mpg123` がインストールされていて、音声が有効なときは通常ユーザが再生デバイスに書き込めること）
 6. Git のコミット署名用 SSH 鍵が作成されていること
@@ -423,6 +425,31 @@ sudo docker run --rm hello-world
 - 通常ユーザは `docker` グループに入れていないので、`docker` コマンドには `sudo` を付けます（付けないと `/var/run/docker.sock` に接続できず permission denied になります）。エージェントに Docker を使わせるときも `sudo docker ...` を使うよう指示してください
 - VM 内のユーザはもともとパスワードなしで sudo できるため、`docker` グループに入れた場合と権限は変わりません
 
+## mise
+
+[mise](https://mise.jdx.dev/) で、プロジェクトごとに言語やツールのバージョンを切り替えられます。
+
+```sh
+mise use -g node@lts   # グローバル（~/.config/mise/config.toml）に設定してインストールする
+cd my-project && mise use python@3.13   # このディレクトリの mise.toml に設定してインストールする
+```
+
+`provision/mise.sh` で、`~/.bashrc` に `eval "$(~/.local/bin/mise activate bash)"` を追記しています（実際の行には、`~` ではなくホームの絶対パスが入ります）。
+対話シェルでは、プロンプトを表示するたびに、カレントディレクトリの設定に合わせて PATH が切り替わります。
+
+> [!IMPORTANT]
+> この切り替えは対話シェルのプロンプトで行われるため、エージェントが実行する非対話のコマンド（`bash -c '...'` など）や、`limactl shell coding-sandbox <コマンド>` では行われません。
+> エージェントは起動したシェルの PATH を引き継ぐので、エージェントの中で別のプロジェクトのディレクトリに移っても、**起動したときのバージョン**のツールが使われます。
+> 例えば、Node.js 20 を設定したディレクトリでエージェントを起動し、Node.js 22 を設定した別のプロジェクトで `node -v` を実行しても、Node.js 20 になります。
+>
+> そのディレクトリの設定でコマンドを実行するには、`mise exec`（短縮形は `mise x`）を使ってください。エージェントにもこの方法を使うよう指示してください。
+>
+> ```sh
+> cd other-project && mise exec -- node -v
+> ```
+>
+> エージェントを使うプロジェクトのディレクトリに移ってから、エージェントを起動する方法もあります。
+
 ## 音声
 
 VM の中で再生した音は、ホストのスピーカーから鳴ります。次のコマンドで確認できます（「Front Center」と聞こえます）。
@@ -449,6 +476,7 @@ limactl shell coding-sandbox aplay /usr/share/sounds/alsa/Front_Center.wav
 | herdr | `herdr update` |
 | Antigravity CLI | 自動で更新される |
 | GitHub Copilot CLI | `copilot update` |
+| mise | `mise self-update` |
 | 基本的なツール・GitHub CLI・Docker Engine（apt パッケージ） | `sudo apt-get update && sudo apt-get upgrade` |
 
 ## トラブルシューティング
