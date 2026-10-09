@@ -58,6 +58,15 @@ create: ## インスタンスを作成する（作成済みなら何もしない
 	  echo "インスタンス $(NAME) は作成済みです"; \
 	  exit 0; \
 	fi; \
+	mounts=$$(limactl template yq ./$(TEMPLATE) '.mounts[] | "- location: " + .location') || { \
+	  echo >&2 "エラー: テンプレートまたは設定の検証に失敗しました"; \
+	  exit 1; \
+	}; \
+	if [ -n "$$mounts" ]; then \
+	  echo >&2 "エラー: ホストのディレクトリをマウントする設定があります（README.md の「ホストのマウントが混入しないように」を参照）:"; \
+	  printf '%s\n' "$$mounts" >&2; \
+	  exit 1; \
+	fi; \
 	normalize() { \
 	  v=$$1; \
 	  v=$${v#"$${v%%[![:space:]]*}"}; \
@@ -80,7 +89,38 @@ create: ## インスタンスを作成する（作成済みなら何もしない
 
 # limactl start --param は値をカンマで区切ってしまうため、--param は limactl create で渡す
 start: create ## インスタンスを起動する（無ければ作成する）
-	limactl start $(if $(TIMEOUT),--timeout=$(TIMEOUT)) $(NAME)
+	@mounts=$$(limactl list $(NAME) --format '{{range .Config.Mounts}}- location: {{.Location}}{{"\n"}}{{end}}') || { \
+	  echo >&2 "エラー: インスタンス $(NAME) の設定確認に失敗しました"; \
+	  exit 1; \
+	}; \
+	if [ -n "$$mounts" ]; then \
+	  echo >&2 "エラー: ホストのディレクトリをマウントする設定があります（README.md の「ホストのマウントが混入しないように」を参照）:"; \
+	  printf '%s\n' "$$mounts" >&2; \
+	  $(get-status); \
+	  if [ "$$st" = Running ]; then \
+	    echo >&2 "インスタンス $(NAME) を停止します..."; \
+	    limactl stop $(NAME); \
+	  fi; \
+	  exit 1; \
+	fi; \
+	if limactl start $(if $(TIMEOUT),--timeout=$(TIMEOUT)) $(NAME); then \
+	  :; \
+	else \
+	  ret=$$?; \
+	  if mounts=$$(limactl list $(NAME) --format '{{range .Config.Mounts}}- location: {{.Location}}{{"\n"}}{{end}}'); then \
+	    if [ -n "$$mounts" ]; then \
+	      echo >&2 "エラー: 起動後にホストのマウントが検出されました。インスタンス $(NAME) を停止します..."; \
+	      if ! limactl stop $(NAME); then \
+	        echo >&2 "警告: インスタンス $(NAME) の自動停止に失敗しました。手動で limactl stop $(NAME) を実行してください"; \
+	      fi; \
+	      echo >&2 "検出されたマウント:"; \
+	      printf '%s\n' "$$mounts" >&2; \
+	    fi; \
+	  else \
+	    echo >&2 "警告: 起動失敗後のマウント設定の再確認に失敗しました"; \
+	  fi; \
+	  exit $$ret; \
+	fi
 
 shell: start ## シェルに入る（停止していれば起動する）
 	limactl shell $(NAME)
