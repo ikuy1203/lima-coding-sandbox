@@ -16,7 +16,7 @@ base_packages=(
   ca-certificates curl wget git jq less openssh-client
   # gcc / g++ / make
   build-essential
-  # 検索・ファイル操作（fd-find のコマンド名は fdfind）
+  # 検索・ファイル操作（fd-find のコマンド名は fdfind。fd のシンボリックリンクを自動作成する）
   ripgrep fd-find unzip zip tree
   # シェルスクリプトの検査
   shellcheck
@@ -34,10 +34,11 @@ all_installed() {
   done
 }
 
-# すべてインストール済みなら何もしない（起動のたびに apt-get update しない）
-if all_installed; then
-  exit 0
+# パッケージがすべてインストール済みでなければインストールする（起動のたびに apt-get update しない）
+if ! all_installed; then
+  apt-get update
+  apt-get install -y "${base_packages[@]}"
 fi
 
-apt-get update
-apt-get install -y "${base_packages[@]}"
+# Ubuntu の fd-find はコマンド名が fdfind のため、エージェント等の互換性のために fd のシンボリックリンクを作成する
+ln -sf "$(command -v fdfind)" /usr/local/bin/fd
