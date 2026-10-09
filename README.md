@@ -45,14 +45,14 @@
 | git、curl、wget、jq、less、openssh-client、ca-certificates | `git`、`curl`、`wget`、`jq`、`less`、`ssh` |
 | gh（GitHub CLI） | `gh` |
 | build-essential | `gcc`、`g++`、`make` |
-| ripgrep、fd-find、unzip、zip、tree | `rg`、`fdfind`、`unzip`、`zip`、`tree` |
+| ripgrep、fd-find、unzip、zip、tree | `rg`、`fd`（`fdfind`）、`unzip`、`zip`、`tree` |
 | shellcheck | `shellcheck` |
 | python3-venv、python3-pip、pipx | `python3 -m venv`、`pip3`、`pipx` |
 | nodejs、npm | `node`、`npm`、`npx` |
 
 1 行目のパッケージはイメージに最初から入っていますが、イメージが変わっても確実に入るように明記しています（新しい版があれば、初回の起動時に更新されます）。
 
-- fd-find のコマンド名は `fd` ではなく `fdfind` です（Ubuntu のパッケージの仕様）。`fd` で使いたいときは `ln -s "$(command -v fdfind)" ~/.local/bin/fd` を実行してください
+- Ubuntu の仕様上、`fd-find` パッケージのコマンド名は `fdfind` ですが、コーディングエージェントやツールの互換性のため `/usr/local/bin/fd` にシンボリックリンクを作成しています（`fd` と `fdfind` のどちらでも実行できます）
 - `pip3 install` で Python のパッケージをシステムに入れることはできません（`externally-managed-environment` のエラーになります）。`python3 -m venv` で作った仮想環境の中で使うか、コマンドとして使うツールは `pipx install` で入れてください（`~/.local/bin` に入ります）
 - Node.js と npm は Ubuntu のリポジトリの版（Node.js 22 / npm 9）です。`npm install -g` は `/usr/local` に入れようとするため、そのままでは権限のエラー（`EACCES`）になります。先に `npm config set prefix ~/.local` を実行しておくと、`~/.local/bin` に入るようになります（`npx` はそのまま使えます）
 

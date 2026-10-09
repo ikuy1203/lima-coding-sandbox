@@ -108,7 +108,7 @@ probes:
     #!/bin/bash
     set -eu -o pipefail
     # provision/base-packages.sh と provision/github-cli.sh で入れるパッケージの主なコマンド
-    for cmd in git curl wget jq less ssh gh gcc make rg fdfind unzip zip tree shellcheck pip3 pipx node npm; do
+    for cmd in git curl wget jq less ssh gh gcc make rg fd fdfind unzip zip tree shellcheck pip3 pipx node npm; do
       # $1 は内側の bash で展開させる
       # shellcheck disable=SC2016
       if ! timeout 30s bash -c 'until command -v "$1" >/dev/null; do sleep 3; done' _ "$cmd"; then
@@ -198,7 +198,7 @@ message: |
   limactl shell --sync . {{.Name}}
   ------
   インストール済み:
-  - git, gh, gcc / make, rg, fdfind, python3（venv / pip3 / pipx）, node / npm などの基本的なツール
+  - git, gh, gcc / make, rg, fd (fdfind), python3（venv / pip3 / pipx）, node / npm などの基本的なツール
   - herdr, agy (Antigravity CLI), copilot (GitHub Copilot CLI), mise, docker（`sudo docker` で使う）
   - aplay, mpg123 など（alsa-utils, mpg123）。VM の中で再生した音はホストのスピーカーから鳴ります
   コミットは SSH 鍵で署名されます。GitHub で Verified と表示させるには、次の公開鍵を
