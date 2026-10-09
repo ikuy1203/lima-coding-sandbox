@@ -107,7 +107,7 @@ make stop     # 停止
 
 | ターゲット | 内容 |
 |---|---|
-| `make start` | インスタンスが無ければ作成してから起動する。作成時には、Git のユーザ名とメールアドレスを `--param` で渡す（[後述](#git-のユーザ名とメールアドレスを-env-で指定する)） |
+| `make start` | インスタンスが無ければ作成してから起動する。作成時には、Git のユーザ名とメールアドレスを `--param` で渡す（[後述](#git-のユーザ名とメールアドレスを-env-で指定する)）。作成前・起動前にホストマウントの混入を自動検査し、設定されている場合は起動を拒否する（[後述](#ホストのマウントが混入しないように)） |
 | `make shell` | シェルに入る（停止していれば先に起動する） |
 | `make herdr` | herdr のセッションに入る（無ければ作る。停止していれば先に起動する） |
 | `make herdr-remote` | ホストの herdr から VM のセッションにリモート接続する（停止していれば先に起動する。[後述](#herdr)） |
@@ -237,7 +237,27 @@ limactl delete coding-sandbox
 （`LIMA_HOME` を設定している場合は、`~/.lima` をそのディレクトリに読み替えてください）
 
 これらにマウントの設定があると、この VM にもホストのディレクトリがマウントされます。
-そこで起動時の最初の probe で、ゲスト内にホストのマウント（virtiofs / 9p / sshfs）が無いかを調べ、見つかったら起動をエラーにしています。
+本プロジェクトでは、意図しないホストマウントの混入を防ぐため、多層防御の仕組みを備えています。
+
+### 1. make による起動前の自動検査・防止（推奨）
+
+`Makefile` 経由で操作する場合（`make start`、`make shell`、`make herdr` など）、VM の作成前および起動前にマウント設定の有無を自動検査します。
+
+- **作成前（`make create`）**: `limactl template yq` でグローバル設定をマージしたテンプレートを検査し、マウントが検出された場合はインスタンスを作成せずにエラー終了します。
+- **起動前（`make start`）**: `limactl list` でインスタンスに反映されるマウント設定を検査し、マウントが検出された場合は起動せずにエラー終了します。既に VM が起動中の状態でマウントが確認された場合は、安全のため自動で `limactl stop` を実行して停止します。
+- **起動失敗時の保護**: 万一マウントが存在する状態で `limactl start` が失敗した場合、マウント混入を検知して自動で VM を停止し、検出されたマウントと設定確認を案内します（※単なる回線遅延等によるプロビジョニングタイムアウト時は VM を停止せず、バックグラウンド処理を継続させます。自動停止に失敗した場合も手動停止を案内します）。
+
+マウントが検出された場合は、次のようにマウント元のパスが表示されて停止します:
+
+```text
+エラー: ホストのディレクトリをマウントする設定があります（README.md の「ホストのマウントが混入しないように」を参照）:
+- location: /Users/<user>/...
+```
+
+### 2. limactl 直接実行時の probe による多層防御
+
+`limactl` コマンドを直接使って起動した場合でも、テンプレート内の最初の probe（`no host directories to be mounted`）がゲスト内の `/proc/self/mounts` を直接調べ、ホストのマウント（virtiofs / 9p / sshfs）が見つかったら起動をエラーにします。
+
 このとき `limactl start` は次の表示から先に進まず、タイムアウト（既定は 10 分）後にエラー（終了コード 1）で終了します。
 
 ```text
@@ -246,16 +266,18 @@ Waiting for the optional requirement 1 of 3: `no host directories to be mounted`
 did not receive an event with the `running` status
 ```
 
-これは**検出するだけ**です。エラーで終了した後も、VM はマウントされた状態のまま動いています。その場合はエージェントを使わずに `limactl stop coding-sandbox` で VM を停止し、設定を直してください。
+⚠️ この probe は**検出するだけ**です。`limactl` を直接使った場合、エラー終了後も VM はマウントされた状態のまま動いています。エージェントを使わずに `limactl stop coding-sandbox` で VM を停止し、設定を直してください。
 
-作成前や起動前に確認するには、次のコマンドを使います（グローバル設定をマージした後の値が表示されます）。
+### 手動でのマウント確認コマンド
+
+作成前や起動前に手動で確認したい場合は、次のコマンドを使います（グローバル設定をマージした後の値が表示されます）。
 
 ```sh
-# 作成前: 何も表示されなければマウントは無い
-limactl validate --fill ./coding-sandbox.yaml 2>/dev/null | grep -A3 '^mounts:'
+# 作成前: マウント設定がある場所が表示される（何も表示されなければマウントなし）
+limactl template yq ./coding-sandbox.yaml '.mounts[] | "- location: " + .location'
 
-# 作成後: [] と表示されればマウントは無い
-limactl list coding-sandbox --format '{{json .Config.Mounts}}'
+# 作成後: マウント設定がある場所が表示される（何も表示されなければマウントなし）
+limactl list coding-sandbox --format '{{range .Config.Mounts}}- location: {{.Location}}{{"\n"}}{{end}}'
 ```
 
 マウントが見つかったときの直し方:
