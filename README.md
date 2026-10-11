@@ -113,6 +113,7 @@ make stop     # 停止
 | `make shell` | シェルに入る（停止していれば先に起動する） |
 | `make herdr` | herdr のセッションに入る（無ければ作る。停止していれば先に起動する） |
 | `make herdr-remote` | ホストの herdr から VM のセッションにリモート接続する（停止していれば先に起動する。[後述](#herdr)） |
+| `make terminfo` | ホストの terminfo を VM にコピーする（既定はホストの `$TERM`。`TERM_NAME=<名前>` で変えられる。停止していれば先に起動する。[後述](#シェルに入る)） |
 | `make stop` / `make restart` | 停止 / 再起動（再起動は、失敗したプロビジョニングのやり直しにも使える） |
 | `make status` | 状態を表示する |
 | `make delete` | 削除する（確認あり。`YES=1` を付けると確認を省略） |
@@ -213,7 +214,9 @@ limactl shell coding-sandbox
 
 ホストの `$TERM`（環境変数）は ssh 経由でそのまま VM に渡されます。VM に terminfo が無い値（Ghostty の `xterm-ghostty` など）のときは、`less`（`git log` や `man` のページャ）が `WARNING: terminal is not fully functional` と表示するのを防ぐため、`/etc/profile.d/terminfo-fallback.sh` が自動で `TERM=xterm-256color` に置き換えます（herdr のペインの中はもともと `xterm-256color` なので置き換えません）。
 
-Ghostty 固有の機能まで使いたいときは、ホストの terminfo を VM にコピーしてください（`~/.terminfo` に保存され、以後は置き換えなくなります。VM を作り直したときは再実行してください）:
+Ghostty 固有の機能まで使いたいときは、ホストの terminfo を VM にコピーしてください（`~/.terminfo` に保存され、以後は置き換えなくなります。VM を作り直したときは再実行してください）。Ghostty で `make terminfo` を実行すると、ホストの `$TERM`（`xterm-ghostty`）の terminfo をコピーします。別のターミナルから実行するときなどは `make terminfo TERM_NAME=xterm-ghostty` のように名前を指定します。
+
+make を使わないときは、次のコマンドでコピーできます:
 
 ```sh
 infocmp -x xterm-ghostty | limactl shell coding-sandbox tic -x -

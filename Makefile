@@ -4,6 +4,7 @@
 #   $ make shell    # シェルに入る（停止していれば起動する）
 #   $ make herdr    # herdr のセッションに入る（停止していれば起動する）
 #   $ make herdr-remote  # ホストの herdr から VM のセッションにリモート接続する
+#   $ make terminfo # ホストの terminfo を VM にコピーする
 #   $ make help     # ターゲットの一覧
 #
 # 変数はコマンドラインで上書きできる:
@@ -22,6 +23,9 @@ DISK :=
 # limactl start のタイムアウト（例: 30m）。空なら Lima の既定値（10 分）
 TIMEOUT :=
 
+# make terminfo で VM にコピーする terminfo の名前。既定はホストの $TERM（例: xterm-ghostty）
+TERM_NAME := $(TERM)
+
 # 設定ファイル（make の書式で KEY=値 を書く。.env.example を参照）。
 # 既定の .env が無ければ読まない。コマンドラインで指定したファイルが無ければエラーにする
 ENV_FILE := .env
@@ -34,7 +38,7 @@ endif
 # Git のユーザ名とメールアドレス（作成時に --param で渡す）。
 # 優先順位: コマンドライン > $(ENV_FILE) > ホストの git config --global（最後のものは create のレシピで補う）。
 # 名前に空白や記号が含まれても壊れないよう、レシピの中では環境変数（"$$GIT_USER_NAME"）として参照する
-export GIT_USER_NAME GIT_USER_EMAIL
+export GIT_USER_NAME GIT_USER_EMAIL TERM_NAME
 
 # インスタンスの状態（Running / Stopped など）を取得してシェル変数 st に格納する。
 # インスタンスが無ければ空文字列、照会失敗時はエラーで終了する。
@@ -45,7 +49,7 @@ endef
 
 .NOTPARALLEL:
 .DEFAULT_GOAL := help
-.PHONY: help create start shell herdr herdr-remote stop restart status delete recreate pubkey logs lint
+.PHONY: help create start shell herdr herdr-remote _check-terminfo terminfo stop restart status delete recreate pubkey logs lint
 
 help: ## ターゲットの一覧を表示する
 	@grep -E '^[a-z-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F ':.*## ' '{ printf "  make %-12s %s\n", $$1, $$2 }'
@@ -144,6 +148,24 @@ herdr-remote: start ## ホストの herdr から VM のセッションにリモ�
 	  exit 1; \
 	fi; \
 	herdr --remote "$$host"
+
+# terminfo の前提条件。ホストに入力されたターミナルの terminfo があるかを事前に検証する
+_check-terminfo:
+	@if [ -z "$$TERM_NAME" ]; then \
+	  echo >&2 "エラー: TERM_NAME が空です（例: make terminfo TERM_NAME=xterm-ghostty）"; \
+	  exit 1; \
+	fi; \
+	infocmp -x "$$TERM_NAME" >/dev/null || { \
+	  echo >&2 "エラー: ホストに $$TERM_NAME の terminfo がありません"; \
+	  exit 1; \
+	}
+
+# ホストの infocmp の出力を VM の tic に渡す。tic は root 以外で実行すると ~/.terminfo に書き込む。
+# パイプでつなぐと /bin/sh では infocmp の失敗を検出できないため、いったん変数に入れてから渡す
+terminfo: _check-terminfo start ## ホストの terminfo を VM にコピーする（既定は $TERM。TERM_NAME=<名前> で変えられる。停止していれば起動する）
+	@src=$$(infocmp -x "$$TERM_NAME") || exit $$?; \
+	printf '%s\n' "$$src" | limactl shell $(NAME) tic -x - || exit $$?; \
+	echo "$$TERM_NAME の terminfo を VM の ~/.terminfo にコピーしました（次に入るシェルから TERM が置き換えられなくなります）"
 
 stop: ## インスタンスを停止する
 	@$(get-status); \
