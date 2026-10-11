@@ -33,6 +33,8 @@ base_packages=(
   ripgrep fd-find unzip zip tree
   # シェルスクリプトの検査
   shellcheck
+  # ファイアウォール（provision/host-loopback-firewall.sh で使う nft コマンド）
+  nftables
   # Python（python3 -m venv / pip3 / pipx）
   python3-venv python3-pip pipx
   # Node.js（node / npm / npx）

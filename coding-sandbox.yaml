@@ -11,6 +11,8 @@
 # - ホストの $TERM の terminfo が VM に無いとき（Ghostty など）は TERM=xterm-256color にする
 # - VM の中で再生した音を、ホストのスピーカーから鳴らす（再生のみ。マイクは使えない）
 # - エージェントは非 root の通常ユーザで実行する（Docker は sudo なしで使える）
+# - ゲストのポートをホストに自動で転送しない（make forward で必要なときだけ転送する）
+# - VM から host.lima.internal（ホストの 127.0.0.1）への接続を、VM の中の nftables で遮断する（param で無効にできる）
 #
 # 詳細は README.md を参照。
 
@@ -33,6 +35,10 @@ disk: 100GiB
 param:
   gitUserName: ""
   gitUserEmail: ""
+  # VM（Docker のコンテナを含む）から host.lima.internal（ホストの 127.0.0.1 につながる）への接続を、
+  # VM の中の nftables で遮断する（provision/host-loopback-firewall.sh）。"false" にすると遮断しない。
+  # make start で作成する場合は .env の BLOCK_HOST_LOOPBACK で指定できる。作成後に変える方法は README.md の「ネットワーク」を参照
+  blockHostLoopback: "true"
 
 # ホストのディレクトリは一切マウントしない。
 # ただし $LIMA_HOME/_config/default.yaml・override.yaml（作成時は base.yaml も）にマウントの設定があると、
@@ -48,6 +54,21 @@ ssh:
   # ホストの SSH エージェントや ~/.ssh/*.pub をゲストに渡さない（いずれも Lima の既定値だが明示する）
   forwardAgent: false
   loadDotSSHPubKeys: false
+
+# ゲストで listen したポートを、ホストの 127.0.0.1 に自動で転送しない（Lima の既定では、127.0.0.1・0.0.0.0 などに bind した
+# ポートがすべて転送される）。エージェントが起動したサーバに、ホストのブラウザやツールが意図せず接続しないようにするため
+# （ホストで動いていないサービスと同じポートで待ち受けられると、ホストのクライアントが認証情報などを VM に送ってしまう）。
+# - guestIP: 0.0.0.0 は、guestIPMustBeZero: false を明示しないと、0.0.0.0 に bind したポートにしか一致しない
+#   （127.0.0.1 や ::1 に bind したポートは、Lima の既定のルールで転送されてしまう）
+# - ルールは上から順に、最初に一致したものが使われる。$LIMA_HOME/_config/override.yaml のルールはこれより前に、
+#   default.yaml のルールはこれより後に置かれる
+# - SSH のポートは Lima が別に扱うため、この設定の影響を受けない
+# 必要なときは make forward PORT=<ポート> で転送する（README.md の「ネットワーク」を参照）
+portForwards:
+- guestIP: 0.0.0.0
+  guestIPMustBeZero: false
+  proto: any
+  ignore: true
 
 # VM の中で再生した音を、ホストのスピーカーから鳴らす（Lima では EXPERIMENTAL の機能）。
 # vmType は Lima の既定（macOS では vz）を使う。VZ では device: vz を指定すると、
@@ -72,6 +93,8 @@ provision:
   file: provision/docker-engine.sh
 - mode: system
   file: provision/apt-packages.sh
+- mode: system
+  file: provision/host-loopback-firewall.sh
 - mode: system
   file: provision/terminfo-fallback.sh
 - mode: system
@@ -110,7 +133,7 @@ probes:
     #!/bin/bash
     set -eu -o pipefail
     # provision/apt-packages.sh で入れるパッケージ（gh を含む）の主なコマンド
-    cmds=(git curl wget jq less ssh gh gcc make rg fd fdfind unzip zip tree shellcheck pip3 pipx node npm)
+    cmds=(git curl wget jq less ssh gh gcc make rg fd fdfind unzip zip tree shellcheck nft pip3 pipx node npm)
     # 見つからないコマンドを空白区切りで出力する
     missing() {
       local cmd
@@ -127,6 +150,20 @@ probes:
       fi
       sleep 3
     done
+  hint: See "/var/log/cloud-init-output.log" in the guest
+- description: connections to the host loopback (host.lima.internal) to be blocked
+  script: |
+    #!/bin/bash
+    set -eu -o pipefail
+    # provision/host-loopback-firewall.sh で読み込む nftables のテーブルを確認する。
+    # param の blockHostLoopback が false のときは遮断しないため、確認しない
+    if [ "${PARAM_blockHostLoopback:-true}" = false ]; then
+      exit 0
+    fi
+    if ! timeout 30s bash -c 'until sudo -n nft list table inet lima_coding_sandbox >/dev/null 2>&1; do sleep 3; done'; then
+      echo >&2 "nftables rules to block host.lima.internal are not loaded yet"
+      exit 1
+    fi
   hint: See "/var/log/cloud-init-output.log" in the guest
 - description: herdr, Antigravity CLI, GitHub Copilot CLI and mise to be installed
   script: |
@@ -236,6 +273,13 @@ message: |
   ------
   limactl shell --sync . {{.Name}}
   ------
+  ゲストのポートはホストに自動で転送しません。ホストのブラウザで開くときは、ホストで次のコマンドを実行してください:
+  ------
+  make forward PORT=<ポート>
+  ------
+  {{- if ne .Param.blockHostLoopback "false"}}
+  VM から host.lima.internal（ホストの 127.0.0.1）への接続は遮断しています（README.md の「ネットワーク」を参照）。
+  {{- end}}
   インストール済み:
   - git, gh, gcc / make, rg, fd (fdfind), python3（venv / pip3 / pipx）, node / npm などの基本的なツール
   - herdr, agy (Antigravity CLI), copilot (GitHub Copilot CLI), mise, docker
