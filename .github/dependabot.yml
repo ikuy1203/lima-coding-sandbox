@@ -1,0 +1,20 @@
+# GitHub Actions のアクション（.github/workflows/ でコミットの SHA に固定しているもの）を
+# 週 1 回確認して、新しい版があれば SHA と末尾のバージョンのコメントを更新する PR を作る
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    # CI の定期実行（ci.yml の schedule）と同じ火曜の朝に確認する
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    # 公開されてすぐの版（壊れている・乗っ取られている版かもしれない）を避けるため、
+    # 公開から 7 日たった版だけを提案する（脆弱性の修正の PR には適用されない）
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+    labels:
+      - ci
