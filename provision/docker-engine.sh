@@ -1,29 +1,29 @@
 #!/bin/bash
-# Docker Engine をインストールする（mode: system / root で実行）
+# Docker Engine の apt リポジトリを登録し、ラッパーを配置する（mode: system / root で実行）
 #
 # 公式手順: https://docs.docker.com/engine/install/ubuntu/#install-using-the-repository
 #
-# 非対話で実行するため、ドキュメントの apt コマンドは apt-get -y に置き換えている。
-# インストールすると Docker のサービスは自動で起動・有効化される（Ubuntu の既定）。
-# エージェントや通常ユーザが sudo を意識せずに使えるよう、/usr/local/bin/docker にラッパーを配置する。
+# 公式手順との差異:
+# - apt-get update を 1 回に集約するため、リポジトリ登録後の apt update および Docker Engine パッケージ群
+#   （docker-ce 等）のインストールはここでは実行せず、後続の provision/apt-packages.sh でまとめて行う。
+#   そのため、このスクリプトは apt-packages.sh より前に実行する（coding-sandbox.yaml の provision の順序）。
+# - 公式手順の事前準備にある apt-get update && apt-get install ca-certificates curl は、
+#   どちらもイメージに同梱されているため、存在しない場合のみ実行する（不要な apt-get update を防ぐ）。
+# - root で実行するため公式のコマンドから sudo を外している。
+# - 非対話で実行するため apt は apt-get -y に置き換えている。
+# - 公式手順の docker グループ追加方式の代わりに、/usr/local/bin/docker にパスワードなし sudo を透過実行する
+#   ラッパースクリプトを配置している（グループ方式だと SSH セッション再接続まで反映されないため。README を参照）。
 #
 # Lima は起動のたびにこのスクリプトを実行するため、冪等に作ってある。
 set -eux -o pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
-docker_packages=(docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin)
+keyring=/etc/apt/keyrings/docker.asc
+sources=/etc/apt/sources.list.d/docker.sources
 
-all_installed() {
-  local package
-  for package in "${docker_packages[@]}"; do
-    # shellcheck disable=SC2016
-    [ "$(dpkg-query -W -f='${db:Status-Status}' "${package}" 2>/dev/null)" = installed ] || return 1
-  done
-}
-
-# パッケージがすべてインストール済みでなければインストールする（起動のたびに apt-get update しない）
-if ! all_installed; then
+# 公式 apt リポジトリと鍵が登録済みであればスキップする
+if [ ! -f "${keyring}" ] || [ ! -f "${sources}" ]; then
   # 競合する非公式パッケージを削除する
   conflicting_packages=$(dpkg --get-selections docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc 2>/dev/null | cut -f1 || true)
   if [ -n "${conflicting_packages}" ]; then
@@ -31,25 +31,33 @@ if ! all_installed; then
     apt-get remove -y ${conflicting_packages}
   fi
 
+  # 公式手順の apt-get install ca-certificates curl はイメージに同梱されているため、無いときだけ行う
+  if ! command -v curl >/dev/null || [ ! -f /etc/ssl/certs/ca-certificates.crt ]; then
+    apt-get update
+    apt-get install -y ca-certificates curl
+  fi
+
   # Docker の apt リポジトリを登録する
-  apt-get update
-  apt-get install -y ca-certificates curl
+  # 鍵と sources は一時ファイルに取得・作成し、成功してから置く（途中で失敗しても壊れたファイルを残さない）
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-  chmod a+r /etc/apt/keyrings/docker.asc
+  out_key=$(mktemp)
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o "${out_key}"
+  install -m 0644 "${out_key}" "${keyring}"
+  rm -f "${out_key}"
+
+  install -m 0755 -d /etc/apt/sources.list.d
+  out_src=$(mktemp)
   # shellcheck disable=SC1091
-  tee /etc/apt/sources.list.d/docker.sources <<EOF
+  cat >"${out_src}" <<EOF
 Types: deb
 URIs: https://download.docker.com/linux/ubuntu
 Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
 Components: stable
 Architectures: $(dpkg --print-architecture)
-Signed-By: /etc/apt/keyrings/docker.asc
+Signed-By: ${keyring}
 EOF
-  apt-get update
-
-  # Docker Engine をインストールする
-  apt-get install -y "${docker_packages[@]}"
+  install -m 0644 "${out_src}" "${sources}"
+  rm -f "${out_src}"
 fi
 
 # エージェントや通常ユーザが sudo を意識せずに Docker を利用できるよう、
