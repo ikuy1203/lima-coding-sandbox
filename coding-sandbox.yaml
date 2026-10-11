@@ -10,7 +10,7 @@
 # - Git のユーザ名・メールアドレス（--param で渡す）と、SSH 鍵によるコミット署名を設定する
 # - ホストの $TERM の terminfo が VM に無いとき（Ghostty など）は TERM=xterm-256color にする
 # - VM の中で再生した音を、ホストのスピーカーから鳴らす（再生のみ。マイクは使えない）
-# - エージェントは非 root の通常ユーザで実行する（Docker は `sudo docker` で使う）
+# - エージェントは非 root の通常ユーザで実行する（Docker は sudo なしで使える）
 #
 # 詳細は README.md を参照。
 
@@ -134,8 +134,9 @@ probes:
   script: |
     #!/bin/bash
     set -eu -o pipefail
-    # パイプを通さず、docker info の終了ステータスで判定する（デーモンに接続できなければ失敗する）
-    if ! timeout 30s bash -c 'until sudo -n docker info >/dev/null 2>&1; do sleep 3; done'; then
+    # パイプを通さず、docker info の終了ステータスで判定する（デーモンに接続できなければ失敗する）。
+    # /usr/local/bin/docker のラッパーにより、通常ユーザも sudo なしで実行できることを確認する
+    if ! timeout 30s bash -c 'until docker info >/dev/null 2>&1; do sleep 3; done'; then
       echo >&2 "Docker Engine is not installed or not running yet"
       exit 1
     fi
@@ -199,7 +200,7 @@ message: |
   ------
   インストール済み:
   - git, gh, gcc / make, rg, fd (fdfind), python3（venv / pip3 / pipx）, node / npm などの基本的なツール
-  - herdr, agy (Antigravity CLI), copilot (GitHub Copilot CLI), mise, docker（`sudo docker` で使う）
+  - herdr, agy (Antigravity CLI), copilot (GitHub Copilot CLI), mise, docker
   - aplay, mpg123 など（alsa-utils, mpg123）。VM の中で再生した音はホストのスピーカーから鳴ります
   コミットは SSH 鍵で署名されます。GitHub で Verified と表示させるには、次の公開鍵を
   https://github.com/settings/ssh/new で「Key type: Signing Key」として登録してください:
