@@ -85,7 +85,9 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   └── mise.sh                # mode: user
 ├── scripts/
 │   └── lint.sh                # テンプレートとスクリプトの検査（CI でも実行する）
-└── .github/workflows/ci.yml   # GitHub Actions（scripts/lint.sh を実行する）
+└── .github/
+    ├── dependabot.yml         # GitHub Actions のアクションの更新を週 1 回確認する
+    └── workflows/ci.yml       # GitHub Actions（scripts/lint.sh を実行する）
 ```
 
 ## 前提
@@ -551,5 +553,9 @@ limactl start --timeout=30m ./coding-sandbox.yaml
 ```
 
 GitHub Actions（`.github/workflows/ci.yml`）でも、main ブランチへの push と pull request のたびに同じスクリプトを実行します。Lima は、`minimumLimaVersion` のバージョンと最新のリリースの 2 つで確認します。
+
+push しない間に Lima の新しいリリースでテンプレートの検証が通らなくなっても気づけるように、毎週火曜の 9:23（日本時間）にも同じ CI を実行します。失敗したときは、GitHub の通知（Settings → Notifications → Actions）で知らせが届きます。
+
+`ci.yml` で使うアクションは、コミットの SHA で固定しています。Dependabot（`.github/dependabot.yml`）が毎週火曜に新しい版を確認し、公開から 7 日たった新しい版があれば、SHA と末尾のバージョンのコメントを更新する pull request を作ります。
 
 probes は `file:` で別のファイルに分けず、`coding-sandbox.yaml` に直接書いています。Lima 2.2.0 では、probes の `file:` がインスタンスの作成時に取り込まれないためです（provision の `file:` は取り込まれます）。

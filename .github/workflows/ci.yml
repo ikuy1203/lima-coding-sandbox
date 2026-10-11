@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lima の新しいリリースでテンプレートの検証が通らなくなったことに、push しなくても気づけるように
+  # 週 1 回実行する（マトリックスの latest は実行した時点の最新のリリースを使う）
+  # 毎週火曜 00:23 UTC = 09:23 JST（毎時 0 分は混雑して遅延・スキップされやすいため避ける）
+  schedule:
+    - cron: "23 0 * * 2"
   workflow_dispatch:
 
 permissions:
