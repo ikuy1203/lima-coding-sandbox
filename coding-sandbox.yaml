@@ -63,15 +63,17 @@ audio:
 # Lima はすべての mode: system を実行してから mode: user を実行する。
 # どのスクリプトも起動のたびに実行されるため、冪等に作ってある。
 # provision と probes のスクリプトは Go テンプレートとして展開されるため、`{{` を書かないこと。
+# apt-get update を 1 回に集約するため、サードパーティの apt リポジトリを登録するスクリプト（github-cli.sh, docker-engine.sh）を先に実行し、
+# apt-packages.sh で apt パッケージをまとめてインストールする
 provision:
-- mode: system
-  file: provision/base-packages.sh
-- mode: system
-  file: provision/terminfo-fallback.sh
 - mode: system
   file: provision/github-cli.sh
 - mode: system
   file: provision/docker-engine.sh
+- mode: system
+  file: provision/apt-packages.sh
+- mode: system
+  file: provision/terminfo-fallback.sh
 - mode: system
   file: provision/audio.sh
 - mode: user
@@ -107,27 +109,45 @@ probes:
   script: |
     #!/bin/bash
     set -eu -o pipefail
-    # provision/base-packages.sh と provision/github-cli.sh で入れるパッケージの主なコマンド
-    for cmd in git curl wget jq less ssh gh gcc make rg fd fdfind unzip zip tree shellcheck pip3 pipx node npm; do
-      # $1 は内側の bash で展開させる
-      # shellcheck disable=SC2016
-      if ! timeout 30s bash -c 'until command -v "$1" >/dev/null; do sleep 3; done' _ "$cmd"; then
-        echo >&2 "$cmd is not installed yet"
+    # provision/apt-packages.sh で入れるパッケージ（gh を含む）の主なコマンド
+    cmds=(git curl wget jq less ssh gh gcc make rg fd fdfind unzip zip tree shellcheck pip3 pipx node npm)
+    # 見つからないコマンドを空白区切りで出力する
+    missing() {
+      local cmd
+      for cmd in "${cmds[@]}"; do
+        command -v "$cmd" >/dev/null || printf '%s ' "$cmd"
+      done
+    }
+    # 全コマンドをまとめて確認し、30 秒以内にそろわなければ、見つからないものを全件表示して失敗する
+    deadline=$((SECONDS + 30))
+    while m=$(missing) && [ -n "$m" ]; do
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        echo >&2 "not installed yet: ${m% }"
         exit 1
       fi
+      sleep 3
     done
   hint: See "/var/log/cloud-init-output.log" in the guest
 - description: herdr, Antigravity CLI, GitHub Copilot CLI and mise to be installed
   script: |
     #!/bin/bash
     set -eu -o pipefail
-    for bin in herdr agy copilot mise; do
-      # $1 は内側の bash で展開させる
-      # shellcheck disable=SC2016
-      if ! timeout 30s bash -c 'until [ -x "$1" ]; do sleep 3; done' _ "$HOME/.local/bin/$bin"; then
-        echo >&2 "$bin is not installed yet"
+    bins=(herdr agy copilot mise)
+    # 未インストールの実行ファイルを空白区切りで出力する
+    missing() {
+      local bin
+      for bin in "${bins[@]}"; do
+        [ -x "$HOME/.local/bin/$bin" ] || printf '%s ' "$bin"
+      done
+    }
+    # 全バイナリをまとめて確認し、30 秒以内にそろわなければ、見つからないものを全件表示して失敗する
+    deadline=$((SECONDS + 30))
+    while m=$(missing) && [ -n "$m" ]; do
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        echo >&2 "not installed yet: ${m% }"
         exit 1
       fi
+      sleep 3
     done
   hint: See "/var/log/cloud-init-output.log" in the guest
 - description: mise shims to be on PATH in login shells

@@ -18,15 +18,18 @@
 
 | ソフトウェア | 公式手順 | スクリプト | インストール先 |
 |---|---|---|---|
-| 基本的なツール | Ubuntu のリポジトリ（apt） | `provision/base-packages.sh`（root） | apt パッケージ |
-| GitHub CLI | [Installing gh on Linux and BSD](https://github.com/cli/cli/blob/trunk/docs/install_linux.md#debian)（apt リポジトリ） | `provision/github-cli.sh`（root） | apt パッケージ |
-| Docker Engine | [Install Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubuntu/)（apt リポジトリ） | `provision/docker-engine.sh`（root） | apt パッケージ、`/usr/local/bin/docker`（ラッパー） |
-| 音声（alsa-utils, mpg123） | Ubuntu のリポジトリ（apt） | `provision/audio.sh`（root） | apt パッケージ、`/etc/udev/rules.d/70-lima-coding-sandbox-sound.rules` |
+| 基本的なツール | Ubuntu のリポジトリ（apt） | `provision/apt-packages.sh`（root） | apt パッケージ |
+| GitHub CLI | [Installing gh on Linux and BSD](https://github.com/cli/cli/blob/trunk/docs/install_linux.md#debian)（apt リポジトリ） | `provision/github-cli.sh`（リポジトリ登録）、`provision/apt-packages.sh`（root） | apt パッケージ |
+| Docker Engine | [Install Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubuntu/)（apt リポジトリ） | `provision/docker-engine.sh`（リポジトリ登録・ラッパー）、`provision/apt-packages.sh`（root） | apt パッケージ、`/usr/local/bin/docker`（ラッパー） |
+| 音声（alsa-utils, mpg123） | Ubuntu のリポジトリ（apt） | `provision/apt-packages.sh`（インストール）、`provision/audio.sh`（udev ルール設定）（root） | apt パッケージ、`/etc/udev/rules.d/70-lima-coding-sandbox-sound.rules` |
 | Git 設定・コミット署名 | - | `provision/git-config.sh` | `~/.ssh/id_ed25519_signing`、`~/.gitconfig` |
 | herdr | [Install](https://herdr.dev/docs/install/) | `provision/herdr.sh` | `~/.local/bin/herdr` |
 | Antigravity CLI | [Installation and auth](https://antigravity.google/docs/cli/install) | `provision/antigravity-cli.sh` | `~/.local/bin/agy` |
 | GitHub Copilot CLI | [Installing GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)（install スクリプト） | `provision/copilot-cli.sh` | `~/.local/bin/copilot` |
 | mise | [Installing mise](https://mise.jdx.dev/installing-mise.html)（`https://mise.run`） | `provision/mise.sh` | `~/.local/bin/mise`、`~/.profile`（shims を PATH に追加する行を追記。[後述](#mise)） |
+
+> [!NOTE]
+> 初回起動時間を短縮するため、GitHub CLI や Docker Engine の公式手順にある個別の `apt update && apt install` は行わず、先にリポジトリを登録してから `provision/apt-packages.sh` で `apt-get update` と全 apt パッケージのインストールを 1 回に集約しています（通常時は 1 回のみ。ベースイメージに curl / wget / CA 証明書が不足している場合のみ例外的に事前実行されます。万が一の外部リポジトリ障害時も個別フォールバックにより基本ツール等は導入されます）。
 
 > [!NOTE]
 > Antigravity CLI だけは、公式のコマンドに `curl --compressed` を追加しています。
@@ -38,7 +41,7 @@
 
 ### 基本的なツール
 
-`provision/base-packages.sh` で、次のパッケージを Ubuntu のリポジトリからインストールします（gh だけは `provision/github-cli.sh` で公式のリポジトリから入れます）。
+`provision/apt-packages.sh` で、次のパッケージをインストールします（gh と Docker Engine は公式のリポジトリから、それ以外は Ubuntu のリポジトリから入れます）。
 
 | パッケージ | 主なコマンド |
 |---|---|
@@ -56,7 +59,7 @@
 - `pip3 install` で Python のパッケージをシステムに入れることはできません（`externally-managed-environment` のエラーになります）。`python3 -m venv` で作った仮想環境の中で使うか、コマンドとして使うツールは `pipx install` で入れてください（`~/.local/bin` に入ります）
 - Node.js と npm は Ubuntu のリポジトリの版（Node.js 22 / npm 9）です。`npm install -g` は `/usr/local` に入れようとするため、そのままでは権限のエラー（`EACCES`）になります。先に `npm config set prefix ~/.local` を実行しておくと、`~/.local/bin` に入るようになります（`npx` はそのまま使えます）
 
-ツールを追加するときは、`provision/base-packages.sh` の `base_packages` に追加して、インスタンスを作り直してください。今の VM にだけ入れるなら、VM 内で `sudo apt-get install <パッケージ>` を実行します。
+ツールを追加するときは、`provision/apt-packages.sh` の `base_packages` に追加して、インスタンスを作り直してください。今の VM にだけ入れるなら、VM 内で `sudo apt-get install <パッケージ>` を実行します。
 パッケージを削除するときは、`coding-sandbox.yaml` の probe（`basic tools (git, gh, etc.) to be installed`）のコマンド一覧からも、そのパッケージのコマンドを削除してください（残っていると、起動時の確認が終わらずにタイムアウトします）。
 
 ### 動作確認した環境
@@ -73,11 +76,11 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 ├── .gitignore                 # .env を除外する
 ├── coding-sandbox.yaml        # Lima テンプレート（probes もここに書いてある）
 ├── provision/                 # プロビジョニングスクリプト（起動のたびに実行されるため冪等に作ってある）
-│   ├── base-packages.sh       # mode: system  基本的なツール（Ubuntu のリポジトリ）
+│   ├── github-cli.sh          # mode: system  GitHub CLI の apt リポジトリ登録
+│   ├── docker-engine.sh       # mode: system  Docker Engine の apt リポジトリ登録・ラッパー
+│   ├── apt-packages.sh        # mode: system  apt パッケージの一括インストール（基本的なツール・gh・Docker・alsa-utils/mpg123）
 │   ├── terminfo-fallback.sh   # mode: system  $TERM の terminfo が無いときの代替
-│   ├── github-cli.sh          # mode: system  GitHub CLI
-│   ├── docker-engine.sh       # mode: system  Docker Engine
-│   ├── audio.sh               # mode: system  音声（alsa-utils とサウンドデバイスのパーミッション）
+│   ├── audio.sh               # mode: system  音声（サウンドデバイスのパーミッション）
 │   ├── git-config.sh          # mode: user    Git のユーザ設定とコミット署名
 │   ├── herdr.sh               # mode: user
 │   ├── antigravity-cli.sh     # mode: user

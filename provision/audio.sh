@@ -3,31 +3,18 @@
 #
 # coding-sandbox.yaml の audio.device: vz で、VM に virtio-sound の再生専用のデバイスが追加される
 # （録音用のデバイスは無いため、VM からホストのマイクは使えない）。
-# ドライバ（virtio_snd）は Ubuntu のカーネルに含まれていて自動で読み込まれるので、ここでは次の 2 つを行う。
+# ドライバ（virtio_snd）は Ubuntu のカーネルに含まれていて自動で読み込まれる。
 #
-# 1. alsa-utils（aplay / speaker-test と、確認用の /usr/share/sounds/alsa/*.wav）と mpg123（MP3 再生）をインストールする
-# 2. /dev/snd/* を通常ユーザも読み書きできるようにする（udev ルール）
-#    /dev/snd/* は root:audio の 0660 で作られ、通常ユーザは audio グループに入っていない。
-#    usermod -aG audio で追加しても、Lima はプロビジョニングより前に ssh の ControlMaster を張っていて、
-#    limactl shell のセッションはその接続のグループを引き継ぐため、VM を再起動するまで反映されない。
-#    そこで、udev ルールでデバイスのパーミッションを 0666 にする（VM のユーザは 1 人で、sudo もできるため権限は変わらない）。
+# alsa-utils（aplay / speaker-test）と mpg123（MP3 再生）のパッケージは、apt-get update を 1 回に集約するため
+# provision/apt-packages.sh でインストールする。
+# このスクリプトでは、/dev/snd/* を通常ユーザも読み書きできるようにする udev ルールを設定する:
+#   /dev/snd/* は root:audio の 0660 で作られ、通常ユーザは audio グループに入っていない。
+#   usermod -aG audio で追加しても、Lima はプロビジョニングより前に ssh の ControlMaster を張っていて、
+#   limactl shell のセッションはその接続のグループを引き継ぐため、VM を再起動するまで反映されない。
+#   そこで、udev ルールでデバイスのパーミッションを 0666 にする（VM のユーザは 1 人で、sudo もできるため権限は変わらない）。
 #
 # Lima は起動のたびにこのスクリプトを実行するため、冪等に作ってある。
 set -eux -o pipefail
-
-export DEBIAN_FRONTEND=noninteractive
-
-pkgs=()
-for pkg in alsa-utils mpg123; do
-  # shellcheck disable=SC2016
-  if [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null)" != installed ]; then
-    pkgs+=("$pkg")
-  fi
-done
-if [ ${#pkgs[@]} -gt 0 ]; then
-  apt-get update
-  apt-get install -y "${pkgs[@]}"
-fi
 
 rules=/etc/udev/rules.d/70-lima-coding-sandbox-sound.rules
 out=$(mktemp)
