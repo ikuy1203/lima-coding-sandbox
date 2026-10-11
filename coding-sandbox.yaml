@@ -130,6 +130,24 @@ probes:
       fi
     done
   hint: See "/var/log/cloud-init-output.log" in the guest
+- description: mise shims to be on PATH in login shells
+  script: |
+    #!/bin/bash
+    set -eu -o pipefail
+    # provision/mise.sh が ~/.profile に追記する設定で、ログインシェルの PATH の先頭が mise の shims になることを確認する
+    # $1 は内側の bash で、${PATH} はさらにその中のログインシェル（bash -lc）で展開させる
+    # shellcheck disable=SC2016
+    if ! timeout 30s bash -c '
+      check() {
+        local first
+        first=$(bash -lc "echo \"\${PATH%%:*}\"")
+        [ "$first" = "$1" ]
+      }
+      until check "$1"; do sleep 3; done' _ "$HOME/.local/share/mise/shims"; then
+      echo >&2 "mise shims are not at the front of PATH in login shells"
+      exit 1
+    fi
+  hint: See "/var/log/cloud-init-output.log" in the guest
 - description: Docker Engine to be running
   script: |
     #!/bin/bash

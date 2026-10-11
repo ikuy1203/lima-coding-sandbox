@@ -26,7 +26,7 @@
 | herdr | [Install](https://herdr.dev/docs/install/) | `provision/herdr.sh` | `~/.local/bin/herdr` |
 | Antigravity CLI | [Installation and auth](https://antigravity.google/docs/cli/install) | `provision/antigravity-cli.sh` | `~/.local/bin/agy` |
 | GitHub Copilot CLI | [Installing GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)（install スクリプト） | `provision/copilot-cli.sh` | `~/.local/bin/copilot` |
-| mise | [Installing mise](https://mise.jdx.dev/installing-mise.html)（`https://mise.run/bash`） | `provision/mise.sh` | `~/.local/bin/mise`、`~/.bashrc`（activate の 1 行を追記。[後述](#mise)） |
+| mise | [Installing mise](https://mise.jdx.dev/installing-mise.html)（`https://mise.run`） | `provision/mise.sh` | `~/.local/bin/mise`、`~/.profile`（shims を PATH に追加する行を追記。[後述](#mise)） |
 
 > [!NOTE]
 > Antigravity CLI だけは、公式のコマンドに `curl --compressed` を追加しています。
@@ -61,7 +61,7 @@
 
 ### 動作確認した環境
 
-macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）、git 2.53.0、GitHub CLI 2.102.0、Python 3.14.4、Node.js 22.22.1、Docker Engine 29.8.2、herdr 0.9.3、mpg123 1.33.3、Antigravity CLI 1.2.16、GitHub Copilot CLI 1.0.91
+macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）、git 2.53.0、GitHub CLI 2.102.0、Python 3.14.4、Node.js 22.22.1、Docker Engine 29.8.2、herdr 0.9.3、mpg123 1.33.3、Antigravity CLI 1.2.16、GitHub Copilot CLI 1.0.91、mise 2026.10.7
 
 ## ファイル構成
 
@@ -174,14 +174,15 @@ limactl start \
 
 インスタンス名は `coding-sandbox` です（変えるときは `--name=<名前>` を付ける）。
 初回はイメージのダウンロードとプロビジョニングがあるため数分かかります。
-起動時に `probes` で次の 6 点を確認し、すべて満たされた時点で完了します。
+起動時に `probes` で次の 7 点を確認し、すべて満たされた時点で完了します。
 
 1. ホストのディレクトリがマウントされていないこと
 2. 基本的なツール（git、gh など）がインストールされていること
 3. herdr / Antigravity CLI / GitHub Copilot CLI / mise がインストールされていること
-4. Docker Engine が動いていること
-5. 音声を再生できること（`aplay` と `mpg123` がインストールされていて、音声が有効なときは通常ユーザが再生デバイスに書き込めること）
-6. Git のコミット署名用 SSH 鍵が作成されていること
+4. ログインシェルの PATH の先頭が mise の shims になっていること
+5. Docker Engine が動いていること
+6. 音声を再生できること（`aplay` と `mpg123` がインストールされていて、音声が有効なときは通常ユーザが再生デバイスに書き込めること）
+7. Git のコミット署名用 SSH 鍵が作成されていること
 
 > [!NOTE]
 > `coding-sandbox.yaml` と `provision/*.sh` の内容は、インスタンスの作成時に `~/.lima/coding-sandbox/lima.yaml` に取り込まれます。
@@ -465,21 +466,28 @@ mise use -g node@lts   # グローバル（~/.config/mise/config.toml）に設�
 cd my-project && mise use python@3.13   # このディレクトリの mise.toml に設定してインストールする
 ```
 
-`provision/mise.sh` で、`~/.bashrc` に `eval "$(~/.local/bin/mise activate bash)"` を追記しています（実際の行には、`~` ではなくホームの絶対パスが入ります）。
-対話シェルでは、プロンプトを表示するたびに、カレントディレクトリの設定に合わせて PATH が切り替わります。
+`provision/mise.sh` で、`~/.profile` に mise の shims ディレクトリ（`~/.local/share/mise/shims`）を `PATH` の先頭に追加する設定を追記しています。
+shim は実行されるたびにカレントディレクトリの設定（`mise.toml` や `.tool-versions`）を読み込んでバージョンを決めます。そのため、対話シェルでも、エージェントが実行する非対話のサブシェル（`bash -c '...'` など）や `limactl shell coding-sandbox <コマンド>` でも、`mise exec` を使わずにそのディレクトリのバージョンが使われます。
 
-> [!IMPORTANT]
-> この切り替えは対話シェルのプロンプトで行われるため、エージェントが実行する非対話のコマンド（`bash -c '...'` など）や、`limactl shell coding-sandbox <コマンド>` では行われません。
-> エージェントは起動したシェルの PATH を引き継ぐので、エージェントの中で別のプロジェクトのディレクトリに移っても、**起動したときのバージョン**のツールが使われます。
-> 例えば、Node.js 20 を設定したディレクトリでエージェントを起動し、Node.js 22 を設定した別のプロジェクトで `node -v` を実行しても、Node.js 20 になります。
->
-> そのディレクトリの設定でコマンドを実行するには、`mise exec`（短縮形は `mise x`）を使ってください。エージェントにもこの方法を使うよう指示してください。
->
-> ```sh
-> cd other-project && mise exec -- node -v
-> ```
->
-> エージェントを使うプロジェクトのディレクトリに移ってから、エージェントを起動する方法もあります。
+```sh
+mise use -g node@22
+mkdir -p ~/p1 && cd ~/p1 && mise use node@20
+cd ~ && bash -c 'cd ~/p1 && node -v'   # v20.x（mise exec なしで自動切替）
+```
+
+有効な mise 設定がどこにもないツール（カレントディレクトリ・上位ディレクトリ・グローバル設定のいずれにも未指定のツール）は、shim が `PATH` 上の後続コマンド（Ubuntu のリポジトリから apt でインストールしたシステム標準の `/usr/bin/node` など）に自動でフォールバックします。
+
+> [!NOTE]
+> - **環境変数（`[env]`）の反映**: shims 経由で実行されたコマンドとその子プロセスには `mise.toml` の `[env]` が渡されますが、現在のシェル自体の環境変数としては展開されません（`echo $NODE_ENV` のようなシェルの参照には反映されません）。
+> - **hooks**: `cd` や `enter` / `leave` などの mise フックは実行されません。
+> - **コマンドのパス（`which`）**: `which node` は shim のパス（`~/.local/share/mise/shims/node`）を返します。実体の実行ファイルパスを調べるには `mise which node` を使用してください。
+> - **設定ファイルの信頼（trust）**: 単純なバージョン指定（`[tools]`）のみの `mise.toml` は自動で読み込まれますが、環境変数の設定などを含む設定ファイルは、初回に `mise trust` で明示的に信頼するまで shim による読み込みがブロックされます。
+> - **自動インストール**: 対象コマンドの shim が存在する場合（過去に `mise use` や `mise install` でそのツールを入れたことがある場合）、設定されたバージョンが未インストールでも shim がその場で自動ダウンロードしてインストールします（mise の `not_found_auto_install` の既定の動作）。なお、作成直後の VM には各ツールの shim がまだ無いため、プロジェクトを clone して作業を開始する際は `mise install`（信頼が必要な場合は先に `mise trust`）を実行してツールと shim を準備してください。自動インストールを止めたいときは `mise settings not_found_auto_install=false` を実行します。
+> - **実行オーバーヘッド**: shim はコマンド呼び出しのたびに設定を解決します。スクリプト内のループなどでコマンドを何百回も連続で呼び出す場合は、`mise exec -- <スクリプト>` を使うことで最初の 1 回のみ解決が行われるため高速に実行できます。
+
+> [!WARNING]
+> 人間が対話シェルでフックやシェル変数への環境変数自動反映を使いたい場合、`~/.bashrc` に `eval "$(~/.local/bin/mise activate bash)"` を追記することも可能です。
+> ただし、activate を有効にするとツールの実体ディレクトリが `PATH` の先頭に配置されるため、そのシェルから起動したエージェントでは、サブシェルで別のディレクトリに移っても起動時のバージョンが使われ、上記の自動切替が効かなくなります。
 
 ## 音声
 
