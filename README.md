@@ -11,8 +11,9 @@
 | ホストのディレクトリ | マウントしない（`mounts: []`）。Lima のグローバル設定から混入した場合は、起動時に検出してエラーにする（[後述](#ホストのマウントが混入しないように)） |
 | ユーザ | ホストと同じ名前・UID の通常ユーザ（非 root）。ホームは `/home/<user>.guest`。パスワードなしで sudo できる（Lima の既定） |
 | リソース | 4 CPU / 8 GiB メモリ / 100 GiB ディスク（ディスクはスパースファイルなので、実際に使った分だけ消費する） |
+| ネットワーク | ゲストのポートをホストに自動で転送しない。VM から `host.lima.internal`（ホストの `127.0.0.1`）への接続を遮断する（[後述](#ネットワーク)） |
 | 音声 | VM の中で再生した音を、ホストのスピーカーから鳴らす（再生のみ。マイクは使えない。[後述](#音声)） |
-| ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、mise、Docker Engine、Git のユーザ設定・コミット署名鍵、ターミナル（`$TERM`）の terminfo の代替設定 |
+| ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、mise、Docker Engine、ファイアウォール（nftables）、Git のユーザ設定・コミット署名鍵、ターミナル（`$TERM`）の terminfo の代替設定 |
 
 基本的なツールは Ubuntu のリポジトリから、それ以外の各ソフトウェアは公式ドキュメントの手順でインストールします。
 
@@ -21,6 +22,7 @@
 | 基本的なツール | Ubuntu のリポジトリ（apt） | `provision/apt-packages.sh`（root） | apt パッケージ |
 | GitHub CLI | [Installing gh on Linux and BSD](https://github.com/cli/cli/blob/trunk/docs/install_linux.md#debian)（apt リポジトリ） | `provision/github-cli.sh`（リポジトリ登録）、`provision/apt-packages.sh`（root） | apt パッケージ |
 | Docker Engine | [Install Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubuntu/)（apt リポジトリ） | `provision/docker-engine.sh`（リポジトリ登録・ラッパー）、`provision/apt-packages.sh`（root） | apt パッケージ、`/usr/local/bin/docker`（ラッパー） |
+| ファイアウォール（nftables） | Ubuntu のリポジトリ（apt） | `provision/apt-packages.sh`（インストール）、`provision/host-loopback-firewall.sh`（ルール・サービス登録）（root） | apt パッケージ、`/etc/lima-coding-sandbox/host-loopback-firewall.nft`、`/etc/systemd/system/lima-coding-sandbox-firewall.service` |
 | 音声（alsa-utils, mpg123） | Ubuntu のリポジトリ（apt） | `provision/apt-packages.sh`（インストール）、`provision/audio.sh`（udev ルール設定）（root） | apt パッケージ、`/etc/udev/rules.d/70-lima-coding-sandbox-sound.rules` |
 | Git 設定・コミット署名 | - | `provision/git-config.sh` | `~/.ssh/id_ed25519_signing`、`~/.gitconfig` |
 | herdr | [Install](https://herdr.dev/docs/install/) | `provision/herdr.sh` | `~/.local/bin/herdr` |
@@ -72,13 +74,14 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 .
 ├── README.md
 ├── Makefile                   # よく使う limactl の操作をまとめたもの（make help で一覧を表示）
-├── .env.example               # Makefile が読む設定（Git のユーザ名・メールアドレス）のひな形。.env にコピーして使う
+├── .env.example               # Makefile が読む設定（作成時の設定）のひな形。.env にコピーして使う
 ├── .gitignore                 # .env を除外する
 ├── coding-sandbox.yaml        # Lima テンプレート（probes もここに書いてある）
 ├── provision/                 # プロビジョニングスクリプト（起動のたびに実行されるため冪等に作ってある）
 │   ├── github-cli.sh          # mode: system  GitHub CLI の apt リポジトリ登録
 │   ├── docker-engine.sh       # mode: system  Docker Engine の apt リポジトリ登録・ラッパー
-│   ├── apt-packages.sh        # mode: system  apt パッケージの一括インストール（基本的なツール・gh・Docker・alsa-utils/mpg123）
+│   ├── apt-packages.sh        # mode: system  apt パッケージの一括インストール（基本的なツール・gh・Docker・alsa-utils/mpg123・nftables）
+│   ├── host-loopback-firewall.sh # mode: system host.lima.internal への接続の遮断
 │   ├── terminfo-fallback.sh   # mode: system  $TERM の terminfo が無いときの代替
 │   ├── audio.sh               # mode: system  音声（サウンドデバイスのパーミッション）
 │   ├── git-config.sh          # mode: user    Git のユーザ設定とコミット署名
@@ -112,10 +115,11 @@ make stop     # 停止
 
 | ターゲット | 内容 |
 |---|---|
-| `make start` | インスタンスが無ければ作成してから起動する。作成時には、Git のユーザ名とメールアドレスを `--param` で渡す（[後述](#git-のユーザ名とメールアドレスを-env-で指定する)）。作成前・起動前にホストマウントの混入を自動検査し、設定されている場合は起動を拒否する（[後述](#ホストのマウントが混入しないように)） |
+| `make start` | インスタンスが無ければ作成してから起動する。作成時には、Git のユーザ名とメールアドレスを `--param` で渡す（[後述](#作成時の設定git-ユーザ情報ホストループバック遮断を-env-で指定する)）。作成前・起動前にホストマウントの混入を自動検査し、設定されている場合は起動を拒否する（[後述](#ホストのマウントが混入しないように)） |
 | `make shell` | シェルに入る（停止していれば先に起動する） |
 | `make herdr` | herdr のセッションに入る（無ければ作る。停止していれば先に起動する） |
 | `make herdr-remote` | ホストの herdr から VM のセッションにリモート接続する（停止していれば先に起動する。[後述](#herdr)） |
+| `make forward` | VM のポートをホストの `127.0.0.1` に転送する（`PORT=<VMのポート>` が必須。`HOST_PORT=<ホスト側ポート>` で変えられる。Ctrl-C で終了。[後述](#ネットワーク)） |
 | `make terminfo` | ホストの terminfo を VM にコピーする（既定はホストの `$TERM`。`TERM_NAME=<名前>` で変えられる。停止していれば先に起動する。[後述](#シェルに入る)） |
 | `make stop` / `make restart` | 停止 / 再起動（再起動は、失敗したプロビジョニングのやり直しにも使える） |
 | `make status` | 状態を表示する |
@@ -125,16 +129,16 @@ make stop     # 停止
 | `make logs` | プロビジョニングのログ（cloud-init）の末尾を表示する |
 | `make lint` | `scripts/lint.sh` を実行する |
 
-変数をコマンドラインで指定すると、インスタンス名・リソース（作成時のみ有効）・タイムアウト・Git の設定を変えられます。
+変数をコマンドラインで指定すると、インスタンス名・リソース（作成時のみ有効）・タイムアウト・Git の設定・ホストループバック遮断を変えられます。
 
 ```sh
 make start NAME=sandbox2 CPUS=8 MEMORY=16 DISK=200 TIMEOUT=30m
-make start GIT_USER_NAME="<名前>" GIT_USER_EMAIL="<メールアドレス>"
+make start GIT_USER_NAME="<名前>" GIT_USER_EMAIL="<メールアドレス>" BLOCK_HOST_LOOPBACK=false
 ```
 
 `--param` は `limactl create` で渡しているため、名前にカンマが含まれていても問題ありません。
 
-#### Git のユーザ名とメールアドレスを .env で指定する
+#### 作成時の設定（Git ユーザ情報・ホストループバック遮断）を .env で指定する
 
 `.env.example` をコピーして `.env` を作り、値を書きます（`.env` は `.gitignore` で除外しています）。
 
@@ -146,13 +150,15 @@ cp .env.example .env
 # .env
 GIT_USER_NAME=Taro Yamada
 GIT_USER_EMAIL=taro@example.com
+BLOCK_HOST_LOOPBACK=true
 ```
 
 - `.env` を読むのは Makefile だけです。VM には `limactl create --param` で値だけを渡し、`.env` 自体はコピーしません
-- 値は次の順で決まります: コマンドライン（`make start GIT_USER_NAME=...`） ＞ `.env` ＞ ホストの `git config --global`。`.env` が無いときや値が空のときは、ホストの Git の設定を使います
+- 値は次の順で決まります: コマンドライン（`make start GIT_USER_NAME=...`） ＞ `.env` ＞ ホストの `git config --global`（Git 情報の場合）。`.env` が無いときや値が空のときは既定値を使います
+- `BLOCK_HOST_LOOPBACK` は、VM から `host.lima.internal`（ホストの `127.0.0.1`）への通信を遮断するかを指定します（`true` / `false`、空なら既定値の `true`。[後述](#ネットワーク)）
 - make の書式で読み込むため、値に空白やカンマがあってもクォートは要りません（両端を `"` か `'` で囲んだときは、その 1 組を取り除きます）。`#` から行末はコメントになります
 - 別のファイルを使うには `ENV_FILE` を指定します（例: `make start ENV_FILE=work.env`。指定したファイルが無いとエラーになります）。`*.env` も `.gitignore` で除外しています
-- 値が反映されるのは**インスタンスを作成するときだけ**です。作成後に `.env` を変えても今の VM には反映されません。`make recreate` で作り直すか、VM 内で `git config --global user.name ...` を実行してください（`provision/git-config.sh` は、VM 内で変えた設定を戻さないよう、設定済みの値を上書きしません）
+- 値が反映されるのは**インスタンスを作成するときだけ**です。作成後に `.env` を変えても今の VM にには反映されません。`make recreate` で作り直してください
 - Makefile の変数（`NAME`、`CPUS` など）も `.env` に書けます（コマンドラインで指定した値が優先されます）
 
 以下では、`make` を使わずに `limactl` で直接操作する方法を説明します。
@@ -163,12 +169,13 @@ GIT_USER_EMAIL=taro@example.com
 limactl start ./coding-sandbox.yaml
 ```
 
-Git のユーザ名とメールアドレスをあらかじめ設定するには、作成時に `--param` で渡します（ホストの Git 設定をそのまま渡すこともできます）:
+Git のユーザ名とメールアドレス、およびホストループバック遮断をあらかじめ設定するには、作成時に `--param` で渡します（ホストの Git 設定をそのまま渡すこともできます）:
 
 ```sh
 limactl start \
   --param "gitUserName=$(git config --global user.name)" \
   --param "gitUserEmail=$(git config --global user.email)" \
+  --param "blockHostLoopback=true" \
   ./coding-sandbox.yaml
 ```
 
@@ -177,15 +184,16 @@ limactl start \
 
 インスタンス名は `coding-sandbox` です（変えるときは `--name=<名前>` を付ける）。
 初回はイメージのダウンロードとプロビジョニングがあるため数分かかります。
-起動時に `probes` で次の 7 点を確認し、すべて満たされた時点で完了します。
+起動時に `probes` で次の 8 点を確認し、すべて満たされた時点で完了します。
 
 1. ホストのディレクトリがマウントされていないこと
 2. 基本的なツール（git、gh など）がインストールされていること
-3. herdr / Antigravity CLI / GitHub Copilot CLI / mise がインストールされていること
-4. ログインシェルの PATH の先頭が mise の shims になっていること
-5. Docker Engine が動いていること
-6. 音声を再生できること（`aplay` と `mpg123` がインストールされていて、音声が有効なときは通常ユーザが再生デバイスに書き込めること）
-7. Git のコミット署名用 SSH 鍵が作成されていること
+3. ホストのループバック（host.lima.internal）への接続が遮断されていること（`blockHostLoopback` が true の場合）
+4. herdr / Antigravity CLI / GitHub Copilot CLI / mise がインストールされていること
+5. ログインシェルの PATH の先頭が mise の shims になっていること
+6. Docker Engine が動いていること
+7. 音声を再生できること（`aplay` と `mpg123` がインストールされていて、音声が有効なときは通常ユーザが再生デバイスに書き込めること）
+8. Git のコミット署名用 SSH 鍵が作成されていること
 
 > [!NOTE]
 > `coding-sandbox.yaml` と `provision/*.sh` の内容は、インスタンスの作成時に `~/.lima/coding-sandbox/lima.yaml` に取り込まれます。
@@ -446,6 +454,76 @@ herdr integration install copilot
 herdr integration install antigravity-cli
 ```
 
+## ネットワーク
+
+### ポート転送
+
+Lima の既定動作では、VM 内で listen した全ポート（`127.0.0.1` や `0.0.0.0` に bind されたもの）がホストの `127.0.0.1` の同じポート番号に自動で転送されます。
+しかし本サンドボックスでは、エージェントが意図せず起動したサーバや悪意あるプロセスへのホスト側からの誤アクセスを防ぎ、ポート競合やポート横取りによる機密漏洩（ホストの別ツールが VM 内のサービスに認証情報等を送ってしまうリスク）を避けるため、`coding-sandbox.yaml` の `portForwards` 設定で**自動転送を全面的に無効化（ignore）**しています。
+
+開発中の Web サーバなどをホストのブラウザで確認したいときは、必要なポートだけを手動で一時的に転送します。
+
+```sh
+# VM の 3000 番ポートをホストの http://127.0.0.1:3000 に転送する（フォアグラウンドで実行。Ctrl-C で停止）
+make forward PORT=3000
+
+# ホスト側の待受ポートを変えたい場合（例: ホストの 13000 番に転送）
+make forward PORT=3000 HOST_PORT=13000
+```
+
+`make forward` は `ssh -L` を使用して転送を行います。ControlMaster を無効化して専用接続を張るため、Ctrl-C でコマンドを終了すると同時にポート転送も確実に切断されます。
+
+`make` を使わずに `ssh` コマンドで直接転送することもできます:
+
+```sh
+ssh -F ~/.lima/coding-sandbox/ssh.config -o ControlMaster=no -o ControlPath=none -o ExitOnForwardFailure=yes -N -L 127.0.0.1:3000:127.0.0.1:3000 lima-coding-sandbox
+```
+
+> [!TIP]
+> 特定のポートを常に自動転送させたい場合は、作成後に `limactl edit coding-sandbox` で `.portForwards` の先頭（ignore ルールより前）に転送ルールを追加してください。
+
+### ホストループバック（host.lima.internal）への接続遮断
+
+Lima のユーザモードネットワーク（gvisor-tap-vsock）では、`host.lima.internal`（`192.168.5.2`）宛ての通信がホストマシンのループバックアドレス（`127.0.0.1`）に自動で変換されます（Lima 本体の NAT 実装によるものであり、設定で無効化することはできません）。
+そのため通常は、ホスト上で動作しているローカルデータベースや各種開発サーバ、管理ポート等に VM から接続できてしまいます。
+
+本サンドボックスでは、VM 起動時に `provision/host-loopback-firewall.sh` により **nftables の専用テーブル（`inet lima_coding_sandbox`）** を設定し、VM（Docker コンテナを含む）から `host.lima.internal`（`192.168.5.2`）への通信を即座に拒否（`reject`。TCP では `Connection refused`、その他は ICMP unreachable）します。
+
+```sh
+# VM 内からホストのループバックサービスへアクセスを試みても即座に拒否される
+limactl shell coding-sandbox curl -m 5 http://host.lima.internal:8080/
+# => curl: (7) Failed to connect to host.lima.internal port 8080: Connection refused
+```
+
+- **DNS への影響なし**: conntrack の変換前の宛先（`ct original ip daddr`）で判定して Lima の DNS DNAT（`192.168.5.3:53` から `192.168.5.2` への変換）を通すとともに、ゲストから直接 `192.168.5.2:53` へ送られる DNS 問い合わせも明示的に許可（accept）しているため、通常およびコンテナ内の名前解決（インターネットへのアクセス等）は一切阻害されません
+- **Docker コンテナも保護**: nftables の `output` チェインだけでなく `forward` チェインにもルールを配置しているため、`docker run` で立ち上げたコンテナ内からの通信も遮断されます
+- **systemd サービスによる早期保護**: `lima-coding-sandbox-firewall.service` ユニットを登録することで、VM の再起動時にもプロビジョニング実行を待たずにネットワーク初期化（`network-pre.target`）の段階からルールが有効になります
+- **遮断範囲**: 遮断対象はホストのループバックにつながる `host.lima.internal`（`192.168.5.2`）のみです。ホストの LAN 側 IP アドレスや同一 LAN 内の機器への通信は遮断されません
+
+#### 遮断を無効化（オプトアウト）する方法
+
+社内環境でホストマシンのローカルプロキシ（例: `http_proxy=http://127.0.0.1:3128`）を経由して外部に接続している場合、Lima はプロキシ環境変数の IP を自動的に `192.168.5.2` に変換して VM に渡すため、遮断が有効だと VM から外部ネットワークに接続できなくなります。
+このような場合は、遮断機能を無効化してインスタンスを作成してください。
+
+```sh
+# .env で無効化する場合
+BLOCK_HOST_LOOPBACK=false
+
+# コマンドライン引数で無効化する場合
+make start BLOCK_HOST_LOOPBACK=false
+```
+
+インスタンス作成後に切り替える場合は、一度停止してから設定を更新して起動します:
+
+```sh
+make stop
+limactl edit --tty=false coding-sandbox --set '.param.blockHostLoopback = "false"'
+make start
+```
+
+> [!WARNING]
+> [セキュリティ上の注意](#セキュリティ上の注意)にも記載のとおり、VM 内の通常ユーザはパスワードなしで `sudo` を実行できるため、エージェントが意図して `sudo nft delete table inet lima_coding_sandbox` 等を実行した場合は遮断を解除できてしまいます。本機能は**エージェントやユーザの誤操作・意図しない接続の防止**を目的としており、敵対的な意図を持つエージェントによる意図的な回避を完全に防ぐものではありません。
+
 ## Docker
 
 ```sh
@@ -526,6 +604,7 @@ limactl shell coding-sandbox aplay /usr/share/sounds/alsa/Front_Center.wav
 `limactl start` が `Waiting for the optional requirement ...` から進まないとき（タイムアウトの既定値の 10 分が過ぎるとエラーで終了します）は、表示されている requirement を確認してください。
 
 - `no host directories to be mounted`: ホストのディレクトリがマウントされています。[ホストのマウントが混入しないように](#ホストのマウントが混入しないように)を参照してください
+- `connections to the host loopback ...`: ホストループバック遮断用ルール（nftables）の読み込みに失敗している可能性があります。VM 内で `sudo systemctl status lima-coding-sandbox-firewall` およびログを確認してください
 - それ以外: プロビジョニングスクリプトが失敗している可能性があります。Lima はスクリプトが失敗しても起動処理を続けるため、`probes` でツールのインストールと Docker の起動を確認しています。ゲストのログを確認してください
 
 ```sh
@@ -552,8 +631,8 @@ limactl start --timeout=30m ./coding-sandbox.yaml
 - 隔離の境界は VM です。VM 内のユーザはパスワードなしで sudo できるため、エージェントも VM 内では root 相当の操作ができます
 - テンプレートでは、ホストのディレクトリのマウント、SSH エージェントの転送、ホストの `~/.ssh/*.pub` の読み込みを、いずれも無効にしています。マウントだけは Lima のグローバル設定から混入しうるため、起動時に検出しています（[ホストのマウントが混入しないように](#ホストのマウントが混入しないように)）
 - ホストの herdr からリモート接続（`make herdr-remote`）しても、SSH エージェントは転送されません（VM のペインでは `SSH_AUTH_SOCK` が設定されません）。この接続はホストの `~/.ssh/config` を使うため、`Host *` などで `ForwardAgent yes` を設定していると転送されることがあります。その場合は `lima-*` を対象から外してください
-- Lima の既定動作により、ゲスト内で `127.0.0.1` や `0.0.0.0` に bind されたポートは、ホストの `127.0.0.1` に転送されます（開発中の Web アプリをホストのブラウザで確認できますが、エージェントが起動したサーバにもホストからアクセスできる状態になります）
-- VM からはインターネットに接続できます。また、`host.lima.internal`（`192.168.5.2`）はホストのループバックアドレスにつながっているため、ホストで `127.0.0.1` に bind しているサービス（ローカルのデータベースや開発サーバ、ほかの Lima インスタンスから転送されているポートなど）にも VM から接続できます。認証のないサービスをホストで動かしているときは注意してください（VM 内のファイアウォールで遮断しても、エージェントは sudo で解除できます）
+- ポートの自動転送は無効化しています（`portForwards` 設定）。この設定はホスト側の Lima（hostagent）が適用するため、VM 内のユーザが sudo を使っても回避できません。ホストからアクセスしたいポートがあるときは `make forward PORT=<ポート>` を使用してください（[ネットワーク](#ネットワーク)）
+- VM からはインターネットに接続できます。また、Lima の仕様上 `host.lima.internal`（`192.168.5.2`）はホストのループバックアドレスにつながっていますが、本サンドボックスでは VM 内の nftables により既定で接続を遮断しています。ただし VM 内のユーザはパスワードなしで sudo できるため、エージェントが意図してファイアウォールを解除することは防げません（誤操作の防止にとどまります）。また、Lima の NAT 仕様やホストのパケットフィルタ（pf）では VM からのループバック接続のみを識別して止めることができないため、認証のない機密サービスをホストで稼働させている場合は引き続き注意してください
 - 各 CLI の認証情報は VM 内に保存されます（Copilot CLI と gh は平文で保存される場合があります）。不要になったら `limactl delete` で VM ごと削除してください
 - gh でログインすると、そのトークン（既定のスコープは `repo`・`read:org`・`gist`）は、VM 内で同じユーザとして動くエージェントからも使えます。エージェントは、あなたの GitHub アカウントでアクセスできるリポジトリに push したり、issue や PR を作ったりできます。権限を絞りたいときは、対象のリポジトリと権限を限定した fine-grained PAT を、`gh auth login` の代わりに環境変数 `GH_TOKEN` で渡してください（`GH_TOKEN` は Copilot CLI の `/login` で保存したトークンよりも優先されるため、Copilot CLI が使うトークンも変わる点に注意してください）
 - Git のコミット署名鍵（`~/.ssh/id_ed25519_signing`）には、エージェントが非対話でコミットできるようパスフレーズを付けていません。そのため VM 内のエージェントもあなたの署名付きコミットを作成できます。GitHub の Verified バッジは「この VM で作成されたコミットである」ことを示し、人間が直接書いたことの証明にはなりません。不要になった VM を削除する際は、GitHub の [SSH and GPG keys](https://github.com/settings/keys) から対応する Signing Key も削除してください

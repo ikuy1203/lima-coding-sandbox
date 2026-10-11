@@ -4,13 +4,14 @@
 #   $ make shell    # シェルに入る（停止していれば起動する）
 #   $ make herdr    # herdr のセッションに入る（停止していれば起動する）
 #   $ make herdr-remote  # ホストの herdr から VM のセッションにリモート接続する
+#   $ make forward PORT=3000  # VM のポートをホストの 127.0.0.1 に転送する
 #   $ make terminfo # ホストの terminfo を VM にコピーする
 #   $ make help     # ターゲットの一覧
 #
 # 変数はコマンドラインで上書きできる:
 #   $ make start NAME=sandbox2 CPUS=8 MEMORY=16 DISK=200 TIMEOUT=30m
 #
-# Git のユーザ名とメールアドレスは .env に書ける（.env.example を参照）
+# 作成時の設定（Git のユーザ名・メールアドレス、ホストループバック遮断の有無）は .env に書ける（.env.example を参照）
 
 # インスタンス名
 NAME := coding-sandbox
@@ -22,6 +23,10 @@ MEMORY :=
 DISK :=
 # limactl start のタイムアウト（例: 30m）。空なら Lima の既定値（10 分）
 TIMEOUT :=
+
+# make forward で転送するポート（PORT は必須、HOST_PORT を省略したときは PORT と同じ）
+PORT :=
+HOST_PORT :=
 
 # make terminfo で VM にコピーする terminfo の名前。既定はホストの $TERM（例: xterm-ghostty）
 TERM_NAME := $(TERM)
@@ -35,10 +40,10 @@ else ifeq ($(origin ENV_FILE),command line)
 $(error $(ENV_FILE) が見つかりません)
 endif
 
-# Git のユーザ名とメールアドレス（作成時に --param で渡す）。
+# Git のユーザ名・メールアドレスと、ホストループバック遮断設定（作成時に --param で渡す）。
 # 優先順位: コマンドライン > $(ENV_FILE) > ホストの git config --global（最後のものは create のレシピで補う）。
 # 名前に空白や記号が含まれても壊れないよう、レシピの中では環境変数（"$$GIT_USER_NAME"）として参照する
-export GIT_USER_NAME GIT_USER_EMAIL TERM_NAME
+export GIT_USER_NAME GIT_USER_EMAIL BLOCK_HOST_LOOPBACK TERM_NAME
 
 # インスタンスの状態（Running / Stopped など）を取得してシェル変数 st に格納する。
 # インスタンスが無ければ空文字列、照会失敗時はエラーで終了する。
@@ -49,7 +54,7 @@ endef
 
 .NOTPARALLEL:
 .DEFAULT_GOAL := help
-.PHONY: help create start shell herdr herdr-remote _check-terminfo terminfo stop restart status delete recreate pubkey logs lint
+.PHONY: help create start shell herdr herdr-remote forward _check-terminfo terminfo stop restart status delete recreate pubkey logs lint
 
 help: ## ターゲットの一覧を表示する
 	@grep -E '^[a-z-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F ':.*## ' '{ printf "  make %-12s %s\n", $$1, $$2 }'
@@ -80,6 +85,8 @@ create: ## インスタンスを作成する（作成済みなら何もしない
 	}; \
 	name=$$(normalize "$$GIT_USER_NAME"); \
 	email=$$(normalize "$$GIT_USER_EMAIL"); \
+	block=$$(normalize "$$BLOCK_HOST_LOOPBACK"); \
+	case "$$block" in ""|true|false) ;; *) echo >&2 "エラー: BLOCK_HOST_LOOPBACK は true か false を指定してください: $$block"; exit 1 ;; esac; \
 	[ -n "$$name" ] || name=$$(git config --global user.name 2>/dev/null || true); \
 	[ -n "$$email" ] || email=$$(git config --global user.email 2>/dev/null || true); \
 	if [ -z "$$name" ] || [ -z "$$email" ]; then \
@@ -89,6 +96,7 @@ create: ## インスタンスを作成する（作成済みなら何もしない
 	limactl create --tty=false --name=$(NAME) \
 	  $(if $(CPUS),--cpus=$(CPUS)) $(if $(MEMORY),--memory=$(MEMORY)) $(if $(DISK),--disk=$(DISK)) \
 	  --param "gitUserName=$$name" --param "gitUserEmail=$$email" \
+	  $${block:+--param "blockHostLoopback=$$block"} \
 	  ./$(TEMPLATE)
 
 # limactl start --param は値をカンマで区切ってしまうため、--param は limactl create で渡す
@@ -148,6 +156,17 @@ herdr-remote: start ## ホストの herdr から VM のセッションにリモ�
 	  exit 1; \
 	fi; \
 	herdr --remote "$$host"
+
+# Lima がインスタンスごとに作る ssh.config（ホストの ~/.ssh/config への Include は不要）で ssh -L する。
+# ControlMaster を使うと、ssh は転送を Lima の既存の接続に登録してすぐ終了し、転送が残り続けるため使わない
+# （ControlMaster=no で専用の接続を張るので、Ctrl-C で ssh を終了すると転送も止まる）
+forward: start ## VM のポートをホストの 127.0.0.1 に転送する（PORT=<VM のポート> が必須。HOST_PORT で変えられる。Ctrl-C で終了）
+	@case "$(PORT)" in ''|*[!0-9]*) echo >&2 "エラー: PORT=<VM のポート> を指定してください（例: make forward PORT=3000）"; exit 1 ;; esac; \
+	dir=$$(limactl list $(NAME) --format '{{.Dir}}') || exit $$?; \
+	host_port=$(or $(HOST_PORT),$(PORT)); \
+	echo "VM の 127.0.0.1:$(PORT) を http://127.0.0.1:$$host_port に転送します（Ctrl-C で終了）"; \
+	exec ssh -F "$$dir/ssh.config" -o ControlMaster=no -o ControlPath=none -o ExitOnForwardFailure=yes \
+	  -N -L "127.0.0.1:$$host_port:127.0.0.1:$(PORT)" lima-$(NAME)
 
 # terminfo の前提条件。ホストに入力されたターミナルの terminfo があるかを事前に検証する
 _check-terminfo:
