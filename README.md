@@ -12,7 +12,7 @@
 | ユーザ | ホストと同じ名前・UID の通常ユーザ（非 root）。ホームは `/home/<user>.guest`。パスワードなしで sudo できる（Lima の既定） |
 | リソース | 4 CPU / 8 GiB メモリ / 100 GiB ディスク（ディスクはスパースファイルなので、実際に使った分だけ消費する） |
 | 音声 | VM の中で再生した音を、ホストのスピーカーから鳴らす（再生のみ。マイクは使えない。[後述](#音声)） |
-| ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、mise、Docker Engine（`sudo docker` で使う）、Git のユーザ設定・コミット署名鍵、ターミナル（`$TERM`）の terminfo の代替設定 |
+| ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、mise、Docker Engine、Git のユーザ設定・コミット署名鍵、ターミナル（`$TERM`）の terminfo の代替設定 |
 
 基本的なツールは Ubuntu のリポジトリから、それ以外の各ソフトウェアは公式ドキュメントの手順でインストールします。
 
@@ -20,7 +20,7 @@
 |---|---|---|---|
 | 基本的なツール | Ubuntu のリポジトリ（apt） | `provision/base-packages.sh`（root） | apt パッケージ |
 | GitHub CLI | [Installing gh on Linux and BSD](https://github.com/cli/cli/blob/trunk/docs/install_linux.md#debian)（apt リポジトリ） | `provision/github-cli.sh`（root） | apt パッケージ |
-| Docker Engine | [Install Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubuntu/)（apt リポジトリ） | `provision/docker-engine.sh`（root） | apt パッケージ |
+| Docker Engine | [Install Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubuntu/)（apt リポジトリ） | `provision/docker-engine.sh`（root） | apt パッケージ、`/usr/local/bin/docker`（ラッパー） |
 | 音声（alsa-utils, mpg123） | Ubuntu のリポジトリ（apt） | `provision/audio.sh`（root） | apt パッケージ、`/etc/udev/rules.d/70-lima-coding-sandbox-sound.rules` |
 | Git 設定・コミット署名 | - | `provision/git-config.sh` | `~/.ssh/id_ed25519_signing`、`~/.gitconfig` |
 | herdr | [Install](https://herdr.dev/docs/install/) | `provision/herdr.sh` | `~/.local/bin/herdr` |
@@ -440,12 +440,16 @@ herdr integration install antigravity-cli
 ## Docker
 
 ```sh
-sudo docker run --rm hello-world
+docker run --rm hello-world
 ```
 
 - Docker Engine は公式手順どおりの通常の構成です。デーモンは root 権限のシステムサービス（`docker.service`）として動き、VM の起動時に自動で起動します
-- 通常ユーザは `docker` グループに入れていないので、`docker` コマンドには `sudo` を付けます（付けないと `/var/run/docker.sock` に接続できず permission denied になります）。エージェントに Docker を使わせるときも `sudo docker ...` を使うよう指示してください
-- VM 内のユーザはもともとパスワードなしで sudo できるため、`docker` グループに入れた場合と権限は変わりません
+- 通常ユーザやエージェントが `sudo` を意識せずに Docker を利用できるよう、`/usr/local/bin/docker` にラッパースクリプト（`exec sudo -n /usr/bin/docker "$@"`）を配置しています。これにより、`docker` や `docker compose` コマンドをそのまま実行できます
+- VM 内のユーザはもともとパスワードなしで sudo できるため、権限上の差異はありません
+
+> [!NOTE]
+> このラッパーは `sudo` を介して実行するため、Ubuntu の `sudo` の既定動作により、呼び出し元の環境変数（`TAG=dev docker compose up` など）や `HOME` は保持されません。
+> Docker Compose で環境変数を使うときはカレントディレクトリの `.env` ファイルに記述するか、コマンドの引数で渡してください。また、`docker login` で保存される認証情報や Docker の設定は `/root/.docker` に保存・参照されます。
 
 ## mise
 
