@@ -2,7 +2,7 @@
 
 本ドキュメントは、`lima-coding-sandbox` の Issue（計 21 件、#6〜#25・#29）について、プロジェクトの目的・セキュリティ・開発効率の観点から評価基準を定め、実装の優先順位とロードマップを整理したものです。
 
-> **最終更新: 2026-10-11** — 完了 6 件 / 未解決 15 件。Phase 1 はすべて完了し、現在は **Phase 2** に着手する段階です。
+> **最終更新: 2026-10-19** — 完了 8 件 / 未解決 13 件。Phase 1 は完了し、**Phase 2** も 3 件中 2 件（#9, #10）が完了して残り **#18** のみとなっています。
 
 ---
 
@@ -13,7 +13,7 @@
 | Phase | 対象 Issue | 完了 | 状態 |
 |---|---|:---:|---|
 | Phase 1: Quick Wins & エージェント摩擦解消 | #15, #7, #8, #6, #16, #22 | 6 / 6 | ✅ 完了 |
-| Phase 2: セキュリティ隔離 & 起動高速化 | #10, #9, #18 | 0 / 3 | ▶️ 次に着手 |
+| Phase 2: セキュリティ隔離 & 起動高速化 | #10, #9, #18 | 2 / 3 | 🔄 進行中（残り #18） |
 | Phase 3: プロビジョニング堅牢化 & CI 自動テスト | #13, #24, #25, #21 | 0 / 4 | 未着手 |
 | Phase 4: 運用 DX & コードベース保守 | #17, #12, #20, #19, #11 | 0 / 5 | 未着手 |
 | Phase 5: ドキュメント再編 & 実験的機能 | #23, #14, #29 | 0 / 3 | 未着手 |
@@ -23,17 +23,21 @@
 | # | タイトル | PR | マージ日 (JST) | 実装内容 |
 |:---:|---|:---:|:---:|---|
 | [#15](https://github.com/ikuy1203/lima-coding-sandbox/issues/15) | [Security] make create / make start でホストのマウントを起動前に検出する | [#26](https://github.com/ikuy1203/lima-coding-sandbox/pull/26) | 2026-10-10 | `make create` はマウント設定があれば作成を拒否。`make start` は起動を拒否し、起動中なら停止。`limactl start` 失敗時もマウントを検出したら VM を停止し、元の終了コードを保持 |
-| [#7](https://github.com/ikuy1203/lima-coding-sandbox/issues/7) | [Agent DX] fd コマンド互換シンボリックリンクの自動作成 | [#27](https://github.com/ikuy1203/lima-coding-sandbox/pull/27) | 2026-10-10 | `provision/base-packages.sh` で `fdfind` → `fd` のシンボリックリンクを作成し、probe も `fd` で確認 |
+| [#7](https://github.com/ikuy1203/lima-coding-sandbox/issues/7) | [Agent DX] fd コマンド互換シンボリックリンクの自動作成 | [#27](https://github.com/ikuy1203/lima-coding-sandbox/pull/27) | 2026-10-10 | `provision/base-packages.sh`（#9 で `apt-packages.sh` に改名）で `fdfind` → `fd` のシンボリックリンクを作成し、probe も `fd` で確認 |
 | [#8](https://github.com/ikuy1203/lima-coding-sandbox/issues/8) | [Agent DX] Docker コマンドの sudo なし実行またはラッパーの提供 | [#28](https://github.com/ikuy1203/lima-coding-sandbox/pull/28) | 2026-10-11 | `docker` グループ方式ではなく、`/usr/local/bin/docker` に `exec sudo -n /usr/bin/docker "$@"` のラッパーを配置。probe で `sudo` なしの `docker info` を確認。**制約**: `sudo` 経由のため呼び出し元の環境変数（`TAG=dev docker compose up` 等）や `HOME` は保持されない |
 | [#16](https://github.com/ikuy1203/lima-coding-sandbox/issues/16) | [CI] Dependabot の導入と CI の定期実行（schedule）の追加 | [#30](https://github.com/ikuy1203/lima-coding-sandbox/pull/30) | 2026-10-11 | `.github/dependabot.yml` を追加し、`ci.yml` に週次の schedule 実行を追加 |
 | [#22](https://github.com/ikuy1203/lima-coding-sandbox/issues/22) | [DX] ホストの terminfo を VM にコピーする make terminfo の追加 | [#31](https://github.com/ikuy1203/lima-coding-sandbox/pull/31) | 2026-10-11 | `make terminfo` ターゲットを追加 |
 | [#6](https://github.com/ikuy1203/lima-coding-sandbox/issues/6) | [Agent DX] mise の shims を導入し非対話シェルでのランタイム自動切替を可能にする | [#32](https://github.com/ikuy1203/lima-coding-sandbox/pull/32) | 2026-10-11 | インストーラを `https://mise.run` に切り替え、`~/.profile` で `~/.local/share/mise/shims` を PATH の先頭に追加。probe でログインシェルの PATH 先頭に shims があることを確認 |
+| [#9](https://github.com/ikuy1203/lima-coding-sandbox/issues/9) | [Provisioning] apt-get update の集約と probe 待機処理の最適化による起動高速化 | [#34](https://github.com/ikuy1203/lima-coding-sandbox/pull/34) | 2026-10-11 | `base-packages.sh` を `apt-packages.sh` に改名し、リポジトリ登録（`github-cli.sh`・`docker-engine.sh`）を先行させて `apt-get update` と apt パッケージ導入を 1 回に集約（公式インデックス確認・グループ別フォールバック付き）。`basic tools` と CLI バイナリの probe を一括確認方式に刷新 |
+| [#10](https://github.com/ikuy1203/lima-coding-sandbox/issues/10) | [Security] host.lima.internal（ホストループバック）への通信遮断とポートフォワーディング制御 | [#35](https://github.com/ikuy1203/lima-coding-sandbox/pull/35) | 2026-10-11 | `provision/host-loopback-firewall.sh` と `lima-coding-sandbox-firewall.service` で VM・Docker コンテナから `host.lima.internal` への接続を nftables で遮断（DNS 通信は維持、`blockHostLoopback=false` で無効化可）。`portForwards` で自動ポート転送を全面無効化し、手動転送用の `make forward` を追加 |
 
 ### 前回からの変更点
 
-- **Phase 1 の 6 件がすべてクローズ**。これにより #18（エージェント向け指示ファイル）の前提条件（#6, #7, #8）が揃い、着手可能になった。
-- **新規 Issue [#29](https://github.com/ikuy1203/lima-coding-sandbox/issues/29)**（Makefile → justfile 移行の検討）が追加された。#17 の完了を前提とするため Phase 5 に配置。
-- `Makefile` は #15・#22 の追加で 208 行に増えており、#17（シェル処理の `scripts/` への切り出し）の必要性が高まりつつある。
+- **Phase 2 のうち #9（起動高速化・probe 最適化）と #10（ホストループバック遮断・自動ポート転送無効化）が完了**。Phase 2 の未解決 Issue は **#18**（エージェント向け指示ファイルの配置）の 1 件のみとなった。
+- **#18 に記載すべき VM の前提仕様がすべて確定**: Phase 1（#6, #7, #8）に加え、#10 により「ゲストで listen したポートは自動転送されない（ホストで `make forward PORT=<ポート>` が必要）」「`host.lima.internal`（ホストの `127.0.0.1`）への接続は遮断されている」というネットワーク前提も確定した。
+- **後続フェーズへの反映**:
+  - #9 にて `docker-engine.sh` の鍵取得の一時ファイル化や、`github-cli.sh`・`apt-packages.sh` での公式リポジトリ確認が先行実装されたため、Phase 3 の **#24**・**#25** は残る課題（`curl | sh` スクリプトの一時ファイル化・`trap`・タイムアウト/リトライ、CLI の `--version` 実動作確認など）に集中できる。
+  - #10 の追加により `Makefile` は 228 行、`README.md` は 655 行（約 57 KB）に増加しており、Phase 4 の **#17**（Makefile のシェル処理切り出し）および Phase 5 の **#23**（README 分割・重複削減）の重要性が一段と高まっている。
 
 ---
 
@@ -59,21 +63,19 @@
 
 | 優先度 | # | タイトル | カテゴリ | 重要度 | 難易度 | 選定理由・依存関係 |
 |:---:|:---:|---|---|:---:|:---:|---|
-| **P2** | [#10](https://github.com/ikuy1203/lima-coding-sandbox/issues/10) | [Security] host.lima.internal（ホストループバック）への通信遮断とポートフォワーディング制御 | Security | **高** | **中** | サンドボックス内からホスト側マシンのローカルサービス（DBや管理画面等）への意図しない到達を遮断する中核セキュリティ。#15 でホストマウント対策が完了したため、残るホスト防御の最優先項目。 |
-| **P2** | [#18](https://github.com/ikuy1203/lima-coding-sandbox/issues/18) | [Agent DX] VM の前提をまとめたエージェント向けの指示ファイルを provision で配置する | Agent DX | **高** | **低〜中** | **前提（#6, #7, #8）が完了し着手可能**。Issue 本文の「#8/#6/#7 が実装されるまで」の回避指示は不要になった。代わりに docker ラッパーの制約（環境変数・`HOME` が引き継がれない）や、shims による自動切替を前提とした内容に更新して配置する。 |
-| **P2** | [#9](https://github.com/ikuy1203/lima-coding-sandbox/issues/9) | [Provisioning] apt-get update の集約と probe 待機処理の最適化による起動高速化 | Performance | **高** | **中** | `apt-get update` の重複実行（計6回）の解消と probe の一括チェック化により、VM 作成・起動時間を大幅短縮。Phase 1 で `docker-engine.sh`・`mise.sh` と probe が変更されているため、最新の構成を前提に改修する。 |
+| **P2** | [#18](https://github.com/ikuy1203/lima-coding-sandbox/issues/18) | [Agent DX] VM の前提をまとめたエージェント向けの指示ファイルを provision で配置する | Agent DX | **高** | **低〜中** | **前提（#6, #7, #8, #10）がすべて完了し最優先で着手可能**。Issue 本文の「#8/#6/#7 が実装されるまで」の回避指示は不要になった。代わりに docker ラッパーの制約（環境変数・`HOME` が引き継がれない）、mise shims による自動切替、および #10 によるネットワーク仕様（ポートの自動転送は無効で `make forward` が必要、`host.lima.internal` は遮断）を反映して配置する。 |
 | **P3** | [#13](https://github.com/ikuy1203/lima-coding-sandbox/issues/13) | [CI] GitHub Actions でのプロビジョニングスクリプト実行テストの追加 | CI | **高** | **中〜高** | プロビジョニング改修（#24, #25, #21）のデグレを防ぐための自動テスト基盤。CI 上で構文だけでなく実行可能性を保証。#16 の週次 schedule 実行と組み合わせると上流の破壊も検知できる。 |
-| **P3** | [#24](https://github.com/ikuy1203/lima-coding-sandbox/issues/24) | [Provisioning] 外部ダウンロードのタイムアウト・リトライと失敗時の回復を整備する | Provisioning | **高** | **中** | 初回プロビジョニング時の一時的ネットワーク障害による破損スクリプト実行・途中終了を防止。一時ファイル利用と trap で確実な後始末を行う。 |
-| **P3** | [#25](https://github.com/ikuy1203/lima-coding-sandbox/issues/25) | [Provisioning] インストール済み判定と probes を配布元・実動作の確認に強化する | Provisioning | **高** | **中** | ファイル存在確認（`-x`）だけでなく `--version` や公式 apt リポジトリの整合性まで検証し、破損・誤判定を防止。 |
+| **P3** | [#24](https://github.com/ikuy1203/lima-coding-sandbox/issues/24) | [Provisioning] 外部ダウンロードのタイムアウト・リトライと失敗時の回復を整備する | Provisioning | **高** | **中** | 初回プロビジョニング時の一時的ネットワーク障害による破損スクリプト実行・途中終了を防止。#9 で `docker-engine.sh` の鍵取得は一時ファイル化されたため、残る `curl ... \| sh` スクリプトの一時ファイル取得、タイムアウト・リトライ、および `trap` による確実な後始末を整備する。 |
+| **P3** | [#25](https://github.com/ikuy1203/lima-coding-sandbox/issues/25) | [Provisioning] インストール済み判定と probes を配布元・実動作の確認に強化する | Provisioning | **高** | **中** | #9 で `github-cli.sh` の設定ファイル判定と `apt-packages.sh` の公式候補確認が導入された。これに加え、既存環境の配布元整合性や、CLI のファイル存在確認（`-x`）にとどまらない `--version` 実動作確認、Git 署名設定の診断を強化し、破損・誤判定を防止する。 |
 | **P3** | [#21](https://github.com/ikuy1203/lima-coding-sandbox/issues/21) | [Provisioning] サードパーティツールのバージョンを param で固定できるようにする | Provisioning | **中〜高** | **中** | Copilot CLI や mise 等の上流更新による突然の破壊を防ぎ、再現可能なサンドボックス環境を実現。 |
-| **P4** | [#17](https://github.com/ikuy1203/lima-coding-sandbox/issues/17) | [CI] Makefile のシェル処理を scripts/ に移して shellcheck の対象にする | CI / Maintenance | **中** | **低〜中** | Makefile 内の複雑なインラインスクリプト（#15 のマウント検出、#22 の terminfo など）を `scripts/` に切り出し、shellcheck で自動検査。#12, #20, #29 の前提。 |
+| **P4** | [#17](https://github.com/ikuy1203/lima-coding-sandbox/issues/17) | [CI] Makefile のシェル処理を scripts/ に移して shellcheck の対象にする | CI / Maintenance | **中** | **低〜中** | Makefile（228 行）内の複雑なインラインスクリプト（#15 のマウント検出、#22 の terminfo、#10 の `forward`・`BLOCK_HOST_LOOPBACK` 検証など）を `scripts/` に切り出し、shellcheck で自動検査。#12, #20, #29 の前提。 |
 | **P4** | [#12](https://github.com/ikuy1203/lima-coding-sandbox/issues/12) | [DX] VM 再作成（make recreate）時の認証情報・署名鍵バックアップ支援 | DX | **中〜高** | **中** | `make recreate` のたびに認証セッションや Git コミット署名鍵が消える心理的ハードルを解消。 |
 | **P4** | [#20](https://github.com/ikuy1203/lima-coding-sandbox/issues/20) | [DX] Git の署名鍵の GitHub への登録・削除をホストの gh で支援する | DX | **中** | **中** | ホスト側の `gh` を利用して署名鍵の登録・削除を支援。鍵コメントに作成日・インスタンス名を含めて識別性を向上。 |
 | **P4** | [#19](https://github.com/ikuy1203/lima-coding-sandbox/issues/19) | [DX] ツールを一括更新する make update と、バージョンを表示する make versions の追加 | DX | **中** | **低** | VM 内の複数ツールの更新・状態把握をホストから 1 コマンドで実行可能にする。 |
 | **P4** | [#11](https://github.com/ikuy1203/lima-coding-sandbox/issues/11) | [DX] VS Code / Cursor Remote - SSH 連携のサポート（make ssh-config の追加） | DX | **中** | **低** | ホスト側の VS Code / Cursor から VM 内のワークスペースに Remote-SSH で接続する設定・手順の提供。 |
-| **P5** | [#23](https://github.com/ikuy1203/lima-coding-sandbox/issues/23) | [Docs] ツール一覧などの重複記載の削減と README の分割 | Docs | **中** | **中** | README（572 行）の肥大化解消と二重管理防止。機能改修が落ち着いた段階で一括整理する方が手戻りが少ない。 |
+| **P5** | [#23](https://github.com/ikuy1203/lima-coding-sandbox/issues/23) | [Docs] ツール一覧などの重複記載の削減と README の分割 | Docs | **中** | **中** | README（655 行）の肥大化解消と二重管理防止。機能改修が落ち着いた段階で一括整理する方が手戻りが少ない。 |
 | **P5** | [#14](https://github.com/ikuy1203/lima-coding-sandbox/issues/14) | [Agent DX] Antigravity CLI 向けの Secret Service（Keyring）ヘッドレス対応の検証 | Agent DX | **低〜中** | **高** | 現状 Gemini API キー方式で正常動作しており、ヘッドレス D-Bus/Keyring は不確実性が高いため後回しを推奨。 |
-| **P5** | [#29](https://github.com/ikuy1203/lima-coding-sandbox/issues/29) 🆕 | [DX] Makefile を justfile に移行するか検討する（#17 の後） | DX | **低** | **中** | 検証の結果、そのまま置き換えると `.env` の書式・`ENV_FILE`・変数の優先順位などで非互換が出ることが判明。shellcheck の課題は just でも解決しないため、**#17 を先行**し、引数渡し等の具体的な要望が出た段階で「薄い justfile から `scripts/*.sh` を呼ぶ形」を再検討する。 |
+| **P5** | [#29](https://github.com/ikuy1203/lima-coding-sandbox/issues/29) | [DX] Makefile を justfile に移行するか検討する（#17 の後） | DX | **低** | **中** | 検証の結果、そのまま置き換えると `.env` の書式・`ENV_FILE`・変数の優先順位などで非互換が出ることが判明。shellcheck の課題は just でも解決しないため、**#17 を先行**し、引数渡し等の具体的な要望が出た段階で「薄い justfile から `scripts/*.sh` を呼ぶ形」を再検討する。 |
 
 ---
 
@@ -92,10 +94,10 @@ flowchart TD
         I22["#22 make terminfo ✅"]
     end
 
-    subgraph Phase2["Phase 2: セキュリティ隔離 & 起動高速化 (次に着手)"]
-        I10["#10 host.lima.internal 遮断"]
+    subgraph Phase2["Phase 2: セキュリティ隔離 & 起動高速化 (進行中)"]
+        I10["#10 host.lima.internal 遮断 ✅"]
+        I9["#9 apt 集約 & probe 最適化 ✅"]
         I18["#18 エージェント指示ファイル配置"]
-        I9["#9 apt 集約 & probe 最適化"]
     end
 
     subgraph Phase3["Phase 3: プロビジョニング堅牢化 & CI 自動テスト"]
@@ -126,6 +128,7 @@ flowchart TD
     I6 --> I18
     I7 --> I18
     I8 --> I18
+    I10 --> I18
     I13 --> I24
     I13 --> I25
     I17 --> I12
@@ -134,33 +137,33 @@ flowchart TD
 
     classDef done fill:#d4edda,stroke:#28a745,color:#155724
     classDef next fill:#fff3cd,stroke:#ffc107,color:#856404
-    class I15,I7,I8,I6,I16,I22 done
-    class I10,I18,I9 next
+    class I15,I7,I8,I6,I16,I22,I10,I9 done
+    class I18 next
 ```
 
 ### Phase 1: Quick Wins & エージェント摩擦解消（即効性） — ✅ 完了（2026-10-11）
 - **目的**: 最小限の変更で、重大なセキュリティ漏れ（ホストマウント）の防止と、エージェントがコマンドを実行する際の典型的なエラーを排除する。
 - **対象**:
   - ✅ **#15 [Security]**: `make create` / `make start` 前にマウントを検査（PR #26）
-  - ✅ **#7 [Agent DX]**: `provision/base-packages.sh` で `fd` のシンボリックリンク作成（PR #27）
+  - ✅ **#7 [Agent DX]**: `provision/base-packages.sh`（現 `apt-packages.sh`）で `fd` のシンボリックリンク作成（PR #27）
   - ✅ **#8 [Agent DX]**: `/usr/local/bin/docker` に sudo ラッパーを設置（PR #28）
   - ✅ **#6 [Agent DX]**: `~/.local/share/mise/shims` を PATH に含め、非対話サブシェルでも言語バージョンを自動反映（PR #32）
   - ✅ **#16 [CI]**: `.github/dependabot.yml` 追加と CI の週次 schedule 設定（PR #30）
   - ✅ **#22 [DX]**: `make terminfo` ターゲット追加（PR #31）
 
-### Phase 2: セキュリティ隔離 & 起動高速化（基盤強化） — ▶️ 次に着手
+### Phase 2: セキュリティ隔離 & 起動高速化（基盤強化） — 🔄 進行中（2 / 3 完了）
 - **目的**: サンドボックスのホスト防御を完成させ、エージェントへの前提共有を自動化し、プロビジョニングの体感速度を大幅に引き上げる。
 - **対象**:
-  - **#10 [Security]**: iptables/nftables による `host.lima.internal` へのアクセス遮断と、`portForwards` の明示。README の注意書き（VM 内のファイアウォールはエージェントが sudo で解除できる）も踏まえ、遮断の実効性と限界を明記する
-  - **#18 [Agent DX]**: Phase 1 で解決した項目（fd, docker, mise）を踏まえ、本当に必要な VM 前提のみをまとめた指示ファイルを provision で配置。docker ラッパーの制約（環境変数・`HOME` が引き継がれない）は指示に含める
-  - **#9 [Provisioning]**: サードパーティリポジトリ登録を先行させ、`apt-get update` を 1 回に集約。probe のコマンド判定をループから一括確認へリファクタリング
+  - ✅ **#10 [Security]**: nftables（`provision/host-loopback-firewall.sh`）と systemd ユニットによる `host.lima.internal` へのアクセス遮断、`portForwards` による自動ポート転送の全面無効化、および手動転送用の `make forward` ターゲットの追加（PR #35）
+  - ✅ **#9 [Provisioning]**: サードパーティリポジトリ登録を先行させ、`provision/apt-packages.sh` で `apt-get update` とパッケージ導入を 1 回に集約。probe のコマンド・バイナリ判定を一括確認方式へリファクタリング（PR #34）
+  - ▶️ **#18 [Agent DX]**: Phase 1（fd, docker, mise）および #10（自動ポート転送の無効化・ホストループバック遮断）で確定した仕様を踏まえ、必要な VM 前提をまとめた指示ファイルを provision で配置。docker ラッパーの制約（環境変数・`HOME` が引き継がれない）や手動ポート転送（`make forward`）の案内を含める
 
 ### Phase 3: プロビジョニング堅牢化 & CI 自動検証（安定性）
 - **目的**: ネットワーク障害や上流ツールの破壊的変更に強い再現可能な環境を作る。
 - **対象**:
   - **#13 [CI]**: GitHub Actions 上でプロビジョニングスクリプトを実行するテストジョブを追加（後続のセーフティネット）
-  - **#24 [Provisioning]**: 外部ダウンロード共通処理（タイムアウト、リトライ、一時ファイルダウンロード、trap 処理）の導入
-  - **#25 [Provisioning]**: probe および provision スクリプトでの `--version` 起動確認・公式リポジトリ確認
+  - **#24 [Provisioning]**: 外部ダウンロード共通処理（タイムアウト、リトライ、一時ファイルダウンロード、`trap` 処理）の導入
+  - **#25 [Provisioning]**: probe および provision スクリプトでの `--version` 起動確認・公式リポジトリ確認・Git 署名設定の診断強化
   - **#21 [Provisioning]**: `coding-sandbox.yaml` の `param` や `.env` からツールバージョンを指定可能にする
 
 ### Phase 4: 運用 DX & コードベース保守（利便性）
