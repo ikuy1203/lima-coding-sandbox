@@ -13,6 +13,7 @@
 # - エージェントは非 root の通常ユーザで実行する（Docker は sudo なしで使える）
 # - ゲストのポートをホストに自動で転送しない（make forward で必要なときだけ転送する）
 # - VM から host.lima.internal（ホストの 127.0.0.1）への接続を、VM の中の nftables で遮断する（param で無効にできる）
+# - VM の前提をまとめたエージェント向けの指示ファイルを配置できる（既定は無効。param で有効にできる）
 #
 # 詳細は README.md を参照。
 
@@ -39,6 +40,12 @@ param:
   # VM の中の nftables で遮断する（provision/host-loopback-firewall.sh）。"false" にすると遮断しない。
   # make start で作成する場合は .env の BLOCK_HOST_LOOPBACK で指定できる。作成後に変える方法は README.md の「ネットワーク」を参照
   blockHostLoopback: "true"
+  # VM の前提（マウントなし、docker ラッパーの制約、mise shims、手動ポート転送など）をまとめた
+  # エージェント向けの指示ファイルを配置する（provision/agent-instructions.sh）。既定は配置しない（"false"）。
+  # "true" にすると、GitHub Copilot CLI（~/.copilot/copilot-instructions.md）と
+  # Antigravity CLI（~/.gemini/config/rules/lima-coding-sandbox.md）に配置する。
+  # make start で作成する場合は .env の AGENT_INSTRUCTIONS で指定できる
+  agentInstructions: "false"
 
 # ホストのディレクトリは一切マウントしない。
 # ただし $LIMA_HOME/_config/default.yaml・override.yaml（作成時は base.yaml も）にマウントの設定があると、
@@ -109,6 +116,8 @@ provision:
   file: provision/copilot-cli.sh
 - mode: user
   file: provision/mise.sh
+- mode: user
+  file: provision/agent-instructions.sh
 
 # probes は上から順に、ホストから SSH 経由で確認される。
 # Lima 2.2.0 では probes の file: がインスタンスの作成時に取り込まれない（provision の file: は取り込まれる）ため、
@@ -262,6 +271,24 @@ probes:
       exit 1
     fi
   hint: See "/var/log/cloud-init-output.log" in the guest
+- description: agent instruction files to be configured
+  script: |
+    #!/bin/bash
+    set -eu -o pipefail
+    # provision/agent-instructions.sh で置く指示ファイルを確認する。
+    # param の agentInstructions が true でないとき（既定は false）は置かないため、確認しない
+    if [ "${PARAM_agentInstructions:-false}" != true ]; then
+      exit 0
+    fi
+    # $1 と $2 は内側の bash で展開させる
+    # shellcheck disable=SC2016
+    if ! timeout 30s bash -c 'until [ -f "$1" ] && [ -f "$2" ]; do sleep 3; done' _ \
+      "$HOME/.copilot/copilot-instructions.md" \
+      "$HOME/.gemini/config/rules/lima-coding-sandbox.md"; then
+      echo >&2 "agent instruction files are not created yet"
+      exit 1
+    fi
+  hint: See "/var/log/cloud-init-output.log" in the guest
 
 message: |
   VM にシェルで入るには:
@@ -279,6 +306,9 @@ message: |
   ------
   {{- if ne .Param.blockHostLoopback "false"}}
   VM から host.lima.internal（ホストの 127.0.0.1）への接続は遮断しています（README.md の「ネットワーク」を参照）。
+  {{- end}}
+  {{- if eq .Param.agentInstructions "true"}}
+  エージェント向けの指示ファイル（~/.copilot/copilot-instructions.md、~/.gemini/config/rules/lima-coding-sandbox.md）を配置しています。
   {{- end}}
   インストール済み:
   - git, gh, gcc / make, rg, fd (fdfind), python3（venv / pip3 / pipx）, node / npm などの基本的なツール
