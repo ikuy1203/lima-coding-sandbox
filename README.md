@@ -13,7 +13,7 @@
 | リソース | 4 CPU / 8 GiB メモリ / 100 GiB ディスク（ディスクはスパースファイルなので、実際に使った分だけ消費する） |
 | ネットワーク | ゲストのポートをホストに自動で転送しない。VM から `host.lima.internal`（ホストの `127.0.0.1`）への接続を遮断する（[後述](#ネットワーク)） |
 | 音声 | VM の中で再生した音を、ホストのスピーカーから鳴らす（再生のみ。マイクは使えない。[後述](#音声)） |
-| ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、mise、Docker Engine、ファイアウォール（nftables）、Git のユーザ設定・コミット署名鍵、ターミナル（`$TERM`）の terminfo の代替設定 |
+| ソフトウェア | 基本的なツール（git、gh、build-essential、ripgrep、Python の venv・pipx、Node.js など。[後述](#基本的なツール)）、herdr、Antigravity CLI（`agy`）、GitHub Copilot CLI（`copilot`）、mise、Docker Engine、ファイアウォール（nftables）、Git のユーザ設定・コミット署名鍵、ターミナル（`$TERM`）の terminfo の代替設定、エージェント向けの指示ファイル（既定は無効。[後述](#エージェント向けの指示ファイル)） |
 
 基本的なツールは Ubuntu のリポジトリから、それ以外の各ソフトウェアは公式ドキュメントの手順でインストールします。
 
@@ -29,6 +29,7 @@
 | Antigravity CLI | [Installation and auth](https://antigravity.google/docs/cli/install) | `provision/antigravity-cli.sh` | `~/.local/bin/agy` |
 | GitHub Copilot CLI | [Installing GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)（install スクリプト） | `provision/copilot-cli.sh` | `~/.local/bin/copilot` |
 | mise | [Installing mise](https://mise.jdx.dev/installing-mise.html)（`https://mise.run`） | `provision/mise.sh` | `~/.local/bin/mise`、`~/.profile`（shims を PATH に追加する行を追記。[後述](#mise)） |
+| エージェント指示ファイル | - | `provision/agent-instructions.sh` | `~/.copilot/copilot-instructions.md`、`~/.gemini/config/rules/lima-coding-sandbox.md`（有効化時のみ。[後述](#エージェント向けの指示ファイル)） |
 
 > [!NOTE]
 > 初回起動時間を短縮するため、GitHub CLI や Docker Engine の公式手順にある個別の `apt update && apt install` は行わず、先にリポジトリを登録してから `provision/apt-packages.sh` で `apt-get update` と全 apt パッケージのインストールを 1 回に集約しています（通常時は 1 回のみ。ベースイメージに curl / wget / CA 証明書が不足している場合のみ例外的に事前実行されます。万が一の外部リポジトリ障害時も個別フォールバックにより基本ツール等は導入されます）。
@@ -88,7 +89,8 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── herdr.sh               # mode: user
 │   ├── antigravity-cli.sh     # mode: user
 │   ├── copilot-cli.sh         # mode: user
-│   └── mise.sh                # mode: user
+│   ├── mise.sh                # mode: user
+│   └── agent-instructions.sh  # mode: user    エージェント向け指示ファイル（既定は無効）
 ├── scripts/
 │   └── lint.sh                # テンプレートとスクリプトの検査（CI でも実行する）
 └── .github/
@@ -115,7 +117,7 @@ make stop     # 停止
 
 | ターゲット | 内容 |
 |---|---|
-| `make start` | インスタンスが無ければ作成してから起動する。作成時には、Git のユーザ名とメールアドレスを `--param` で渡す（[後述](#作成時の設定git-ユーザ情報ホストループバック遮断を-env-で指定する)）。作成前・起動前にホストマウントの混入を自動検査し、設定されている場合は起動を拒否する（[後述](#ホストのマウントが混入しないように)） |
+| `make start` | インスタンスが無ければ作成してから起動する。作成時には、Git のユーザ名とメールアドレスを `--param` で渡す（[後述](#作成時の設定git-ユーザ情報ホストループバック遮断エージェント指示配置を-env-で指定する)）。ホストループバック遮断やエージェント向け指示ファイルの配置の有無も指定できる（[後述](#作成時の設定git-ユーザ情報ホストループバック遮断エージェント指示配置を-env-で指定する)）。作成前・起動前にホストマウントの混入を自動検査し、設定されている場合は起動を拒否する（[後述](#ホストのマウントが混入しないように)） |
 | `make shell` | シェルに入る（停止していれば先に起動する） |
 | `make herdr` | herdr のセッションに入る（無ければ作る。停止していれば先に起動する） |
 | `make herdr-remote` | ホストの herdr から VM のセッションにリモート接続する（停止していれば先に起動する。[後述](#herdr)） |
@@ -129,16 +131,16 @@ make stop     # 停止
 | `make logs` | プロビジョニングのログ（cloud-init）の末尾を表示する |
 | `make lint` | `scripts/lint.sh` を実行する |
 
-変数をコマンドラインで指定すると、インスタンス名・リソース（作成時のみ有効）・タイムアウト・Git の設定・ホストループバック遮断を変えられます。
+変数をコマンドラインで指定すると、インスタンス名・リソース（作成時のみ有効）・タイムアウト・Git の設定・ホストループバック遮断・エージェント指示配置を変えられます。
 
 ```sh
 make start NAME=sandbox2 CPUS=8 MEMORY=16 DISK=200 TIMEOUT=30m
-make start GIT_USER_NAME="<名前>" GIT_USER_EMAIL="<メールアドレス>" BLOCK_HOST_LOOPBACK=false
+make start GIT_USER_NAME="<名前>" GIT_USER_EMAIL="<メールアドレス>" BLOCK_HOST_LOOPBACK=false AGENT_INSTRUCTIONS=true
 ```
 
 `--param` は `limactl create` で渡しているため、名前にカンマが含まれていても問題ありません。
 
-#### 作成時の設定（Git ユーザ情報・ホストループバック遮断）を .env で指定する
+#### 作成時の設定（Git ユーザ情報・ホストループバック遮断・エージェント指示配置）を .env で指定する
 
 `.env.example` をコピーして `.env` を作り、値を書きます（`.env` は `.gitignore` で除外しています）。
 
@@ -151,11 +153,13 @@ cp .env.example .env
 GIT_USER_NAME=Taro Yamada
 GIT_USER_EMAIL=taro@example.com
 BLOCK_HOST_LOOPBACK=true
+AGENT_INSTRUCTIONS=false
 ```
 
 - `.env` を読むのは Makefile だけです。VM には `limactl create --param` で値だけを渡し、`.env` 自体はコピーしません
 - 値は次の順で決まります: コマンドライン（`make start GIT_USER_NAME=...`） ＞ `.env` ＞ ホストの `git config --global`（Git 情報の場合）。`.env` が無いときや値が空のときは既定値を使います
 - `BLOCK_HOST_LOOPBACK` は、VM から `host.lima.internal`（ホストの `127.0.0.1`）への通信を遮断するかを指定します（`true` / `false`、空なら既定値の `true`。[後述](#ネットワーク)）
+- `AGENT_INSTRUCTIONS` は、VM の前提をまとめたエージェント向けの指示ファイルを配置するかを指定します（`true` / `false`、空なら既定値の `false`。[後述](#エージェント向けの指示ファイル)）
 - make の書式で読み込むため、値に空白やカンマがあってもクォートは要りません（両端を `"` か `'` で囲んだときは、その 1 組を取り除きます）。`#` から行末はコメントになります
 - 別のファイルを使うには `ENV_FILE` を指定します（例: `make start ENV_FILE=work.env`。指定したファイルが無いとエラーになります）。`*.env` も `.gitignore` で除外しています
 - 値が反映されるのは**インスタンスを作成するときだけ**です。作成後に `.env` を変えても今の VM にには反映されません。`make recreate` で作り直してください
@@ -176,6 +180,7 @@ limactl start \
   --param "gitUserName=$(git config --global user.name)" \
   --param "gitUserEmail=$(git config --global user.email)" \
   --param "blockHostLoopback=true" \
+  --param "agentInstructions=false" \
   ./coding-sandbox.yaml
 ```
 
@@ -194,6 +199,7 @@ limactl start \
 6. Docker Engine が動いていること
 7. 音声を再生できること（`aplay` と `mpg123` がインストールされていて、音声が有効なときは通常ユーザが再生デバイスに書き込めること）
 8. Git のコミット署名用 SSH 鍵が作成されていること
+9. エージェント向けの指示ファイルが作成されていること（`agentInstructions` が true の場合）
 
 > [!NOTE]
 > `coding-sandbox.yaml` と `provision/*.sh` の内容は、インスタンスの作成時に `~/.lima/coding-sandbox/lima.yaml` に取り込まれます。
@@ -453,6 +459,69 @@ herdr のサーバを再起動しても同じセッションを再開できる�
 herdr integration install copilot
 herdr integration install antigravity-cli
 ```
+
+## エージェント向けの指示ファイル
+
+コーディングエージェント（GitHub Copilot CLI や Antigravity CLI 等）はサンドボックスリポジトリ自体の README を読まないため、ホストディレクトリがマウントされていないことや、Docker ラッパーの制約、mise shims の仕様、ポート自動転送が無効であることなどの前提を知らないまま作業してエラーや手戻りを起こすことがあります。
+
+本サンドボックスでは、VM の前提仕様をまとめた指示ファイルを各エージェントのグローバル設定パスに配置する機能（`provision/agent-instructions.sh`）を用意しています。
+
+> [!NOTE]
+> エージェントの振る舞いをむやみに変更したくない利用者のために、**既定では指示ファイルを配置しません（`agentInstructions: "false"`）**。
+> エージェントに VM の前提を自動共有させたい場合のみ、以下の方法で有効化（オプトイン）してください。
+
+### 指示ファイルの配置先
+
+有効化すると、`mode: user` のプロビジョニングにより次のパスに指示が配置されます:
+
+| ソフトウェア | 配置先 | 形式・管理方針 |
+|---|---|---|
+| GitHub Copilot CLI | `~/.copilot/copilot-instructions.md` | `<!-- BEGIN lima-coding-sandbox agent-instructions -->` 〜 `<!-- END lima-coding-sandbox agent-instructions -->` のマーカーコメントで囲まれたブロックとして配置。利用者が独自に記述した内容はそのまま保持され、マーカーブロックのみが更新されます（※マーカーコメントが欠落・重複・破損している場合は、既存内容の消失を防ぐため更新・削除をスキップして警告を出力します。またシンボリックリンクの場合は参照先の実体を更新し、リンク構造を維持します） |
+| Antigravity CLI | `~/.gemini/config/rules/lima-coding-sandbox.md` | YAML フロントマター（`trigger: always_on`）付きの専用ルールファイルとして配置。`~/.gemini/AGENTS.md` や他のルールファイルとは完全に分離して管理されます（※同名ファイルが既に存在し、本スクリプトの管理マーカーがない場合は、利用者の独自ルールを保護するため上書き・削除をスキップして警告を出力します） |
+
+### 指示ファイルに記載される主な内容
+
+1. **ファイルシステムと権限**: ホストのファイルはマウントされていないこと、パスワードなしで `sudo` が利用可能であること
+2. **Docker**: `docker` / `docker compose` を `sudo` なしで実行できること、ただしラッパー経由のため呼び出し元の環境変数や `HOME` は保持されない制約（`.env` ファイルやオプションで渡す必要があること）
+3. **ランタイムとパッケージ管理**: `mise` の shims により `mise exec` 不要で自動バージョン切替が効くこと（初回は `mise install` / `mise trust` が必要なこと）、システムの Python（`pip3 install` 不可。venv / pipx を使用）や Node.js（`npm install -g` の権限エラー。npx や mise を使用）の注意点
+4. **ネットワークとブラウザ**: VM 内にブラウザが無いこと、ポートはホストに自動転送されないため `make forward PORT=<ポート>` が必要なこと、`host.lima.internal`（ホストの `127.0.0.1`）へのアクセス遮断（nftables）を勝手に解除しないこと
+5. **Git と GitHub**: コミット・タグは SSH 署名鍵で自動署名されること、`git push` や `gh` の操作は利用者の GitHub アカウントの権限で行われるため指示された範囲に限定すべきこと
+
+### 有効化（オプトイン）する方法
+
+作成時に有効化するには、`.env` に `AGENT_INSTRUCTIONS=true` を記述するか、`make start` または `limactl start` にパラメータを渡します。
+
+```sh
+# .env で有効化する場合
+AGENT_INSTRUCTIONS=true
+
+# コマンドラインで有効化する場合
+make start AGENT_INSTRUCTIONS=true
+```
+
+`make` を使わない場合:
+
+```sh
+limactl start --param "agentInstructions=true" ./coding-sandbox.yaml
+```
+
+### 作成後に切り替える方法
+
+インスタンス作成後に有効化または無効化する場合は、VM を停止してから設定を更新して再起動します:
+
+```sh
+# 有効化する場合
+make stop
+limactl edit --tty=false coding-sandbox --set '.param.agentInstructions = "true"'
+make start
+
+# 無効化する場合
+make stop
+limactl edit --tty=false coding-sandbox --set '.param.agentInstructions = "false"'
+make start
+```
+
+無効化（`agentInstructions: "false"`）にして起動すると、`~/.gemini/config/rules/lima-coding-sandbox.md` は自動削除され、`~/.copilot/copilot-instructions.md` は管理マーカーブロックのみが取り除かれます（利用者が独自に追記していた内容は保持され、管理ブロックのみで空になった場合はファイル自体が削除されます。ただしシンボリックリンクの場合はリンクを削除せず参照先を空にしてリンク構造を維持します。またマーカー破損や管理外ファイルが存在する場合は警告を出力して削除をスキップします）。
 
 ## ネットワーク
 

@@ -11,7 +11,7 @@
 # 変数はコマンドラインで上書きできる:
 #   $ make start NAME=sandbox2 CPUS=8 MEMORY=16 DISK=200 TIMEOUT=30m
 #
-# 作成時の設定（Git のユーザ名・メールアドレス、ホストループバック遮断の有無）は .env に書ける（.env.example を参照）
+# 作成時の設定（Git のユーザ名・メールアドレス、ホストループバック遮断の有無、エージェント指示配置の有無）は .env に書ける（.env.example を参照）
 
 # インスタンス名
 NAME := coding-sandbox
@@ -40,10 +40,10 @@ else ifeq ($(origin ENV_FILE),command line)
 $(error $(ENV_FILE) が見つかりません)
 endif
 
-# Git のユーザ名・メールアドレスと、ホストループバック遮断設定（作成時に --param で渡す）。
+# Git のユーザ名・メールアドレス、ホストループバック遮断設定、エージェント指示設定（作成時に --param で渡す）。
 # 優先順位: コマンドライン > $(ENV_FILE) > ホストの git config --global（最後のものは create のレシピで補う）。
 # 名前に空白や記号が含まれても壊れないよう、レシピの中では環境変数（"$$GIT_USER_NAME"）として参照する
-export GIT_USER_NAME GIT_USER_EMAIL BLOCK_HOST_LOOPBACK TERM_NAME
+export GIT_USER_NAME GIT_USER_EMAIL BLOCK_HOST_LOOPBACK AGENT_INSTRUCTIONS TERM_NAME
 
 # インスタンスの状態（Running / Stopped など）を取得してシェル変数 st に格納する。
 # インスタンスが無ければ空文字列、照会失敗時はエラーで終了する。
@@ -87,6 +87,8 @@ create: ## インスタンスを作成する（作成済みなら何もしない
 	email=$$(normalize "$$GIT_USER_EMAIL"); \
 	block=$$(normalize "$$BLOCK_HOST_LOOPBACK"); \
 	case "$$block" in ""|true|false) ;; *) echo >&2 "エラー: BLOCK_HOST_LOOPBACK は true か false を指定してください: $$block"; exit 1 ;; esac; \
+	instr=$$(normalize "$$AGENT_INSTRUCTIONS"); \
+	case "$$instr" in ""|true|false) ;; *) echo >&2 "エラー: AGENT_INSTRUCTIONS は true か false を指定してください: $$instr"; exit 1 ;; esac; \
 	[ -n "$$name" ] || name=$$(git config --global user.name 2>/dev/null || true); \
 	[ -n "$$email" ] || email=$$(git config --global user.email 2>/dev/null || true); \
 	if [ -z "$$name" ] || [ -z "$$email" ]; then \
@@ -97,6 +99,7 @@ create: ## インスタンスを作成する（作成済みなら何もしない
 	  $(if $(CPUS),--cpus=$(CPUS)) $(if $(MEMORY),--memory=$(MEMORY)) $(if $(DISK),--disk=$(DISK)) \
 	  --param "gitUserName=$$name" --param "gitUserEmail=$$email" \
 	  $${block:+--param "blockHostLoopback=$$block"} \
+	  $${instr:+--param "agentInstructions=$$instr"} \
 	  ./$(TEMPLATE)
 
 # limactl start --param は値をカンマで区切ってしまうため、--param は limactl create で渡す
