@@ -107,10 +107,10 @@ jobs:
           fi
 
   provision-vm:
-    name: provision VM (Lima on ubuntu-24.04-arm)
+    name: provision VM (Lima + QEMU)
     needs: [lint, changes]
     if: needs.changes.outputs.run_vm == 'true'
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -120,7 +120,7 @@ jobs:
       - name: Install QEMU and dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-arm qemu-utils uidmap dbus-user-session
+          sudo apt-get install -y qemu-system-x86 qemu-utils uidmap dbus-user-session
           if [ -e /dev/kvm ]; then
             sudo chmod 0666 /dev/kvm
             echo "KVM acceleration is available:"
@@ -147,7 +147,7 @@ jobs:
       - name: Show versions
         run: |
           limactl --version
-          qemu-system-aarch64 --version
+          qemu-system-x86_64 --version
 
       - name: Create and start VM
         run: |

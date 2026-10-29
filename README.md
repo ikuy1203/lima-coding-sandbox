@@ -728,7 +728,7 @@ make test    # または bash ./scripts/test.sh
 GitHub Actions（`.github/workflows/ci.yml`）では、以下の 2 段階で自動検証を行います。
 
 1. **`lint` ジョブ**: main ブランチへの push とすべての pull request で、`minimumLimaVersion` と最新リリースの 2 つの Lima バージョンで `scripts/lint.sh` および `scripts/test.sh` を実行します。
-2. **`provision-vm` ジョブ**: `ubuntu-24.04-arm`（Apple silicon と同じ aarch64）ランナー上で実際に Lima VM を作成・初回起動し、主要 CLI や Git 署名・ファイアウォール・エージェント指示ファイルの配置と全 probes を検証します。さらに VM の停止・再起動（`limactl stop` → `limactl start`）を行い、署名鍵の不変性や設定重複がないことを確認します。
+2. **`provision-vm` ジョブ**: `ubuntu-latest`（KVM ハードウェアアクセラレーションが有効な Linux ランナー）上で実際に Lima VM（QEMU）を作成・初回起動し、主要 CLI や Git 署名・ファイアウォール・エージェント指示ファイルの配置と全 probes を検証します。さらに VM の停止・再起動（`limactl stop` → `limactl start`）を行い、署名鍵の不変性や設定重複がないことを確認します。
    - アクション分数節約のため、週 1 回の定期実行（schedule: 毎週火曜 9:23 JST）、手動実行（`workflow_dispatch`）、または `coding-sandbox.yaml`・`provision/`・`scripts/`・`ci.yml` に変更を含む push / pull request で実行されます。
 
 push しない間に Lima の新しいリリースでテンプレートの検証が通らなくなったり、外部 URL の変更でプロビジョニングが壊れたりしても気づけるように、毎週火曜の 9:23（日本時間）にも同じ CI を定期実行します。失敗したときは、GitHub の通知（Settings → Notifications → Actions）で知らせが届きます。
