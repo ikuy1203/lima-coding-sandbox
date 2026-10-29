@@ -121,13 +121,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86 qemu-utils uidmap dbus-user-session
-          if [ -e /dev/kvm ]; then
-            sudo chmod 0666 /dev/kvm
-            echo "KVM acceleration is available:"
-            ls -l /dev/kvm
-          else
-            echo "Notice: /dev/kvm not found; running with software emulation"
+          if [ ! -e /dev/kvm ]; then
+            echo "Error: /dev/kvm not found; KVM acceleration is required for this job." >&2
+            exit 1
           fi
+          sudo chmod 0666 /dev/kvm
+          if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+            echo "Error: /dev/kvm is not readable/writable by the current user." >&2
+            ls -l /dev/kvm >&2
+            exit 1
+          fi
+          echo "KVM acceleration is available:"
+          ls -l /dev/kvm
           df -h
 
       - name: Install Lima (latest)
