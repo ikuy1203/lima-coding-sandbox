@@ -54,3 +54,187 @@ jobs:
           shellcheck --version
 
       - run: ./scripts/lint.sh
+
+      - name: Run fast regression tests
+        run: bash ./scripts/test.sh
+
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_vm: ${{ steps.check.outputs.run_vm }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - id: check
+        name: Check relevant file changes
+        run: |
+          # 定期実行 (schedule) または手動実行 (workflow_dispatch) は常に実 VM テストを実行
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run_vm=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pattern='^(coding-sandbox\.yaml|provision/|scripts/|\.github/workflows/ci\.yml)'
+          changed=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if git fetch origin "${{ github.event.pull_request.base.sha }}" --depth=1; then
+              changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD | grep -E "$pattern" || true)
+            else
+              changed="coding-sandbox.yaml"
+            fi
+          else
+            # push
+            before="${{ github.event.before }}"
+            if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ] && git fetch origin "$before" --depth=1; then
+              changed=$(git diff --name-only "$before" HEAD 2>/dev/null | grep -E "$pattern" || true)
+            else
+              changed="coding-sandbox.yaml"
+            fi
+          fi
+
+          if [ -n "$changed" ]; then
+            echo "Relevant changes detected:"
+            echo "$changed"
+            echo "run_vm=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes for real VM test."
+            echo "run_vm=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  provision-vm:
+    name: provision VM (Lima on ubuntu-24.04-arm)
+    needs: [lint, changes]
+    if: needs.changes.outputs.run_vm == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install QEMU and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm qemu-utils uidmap dbus-user-session
+          if [ -e /dev/kvm ]; then
+            sudo chmod 0666 /dev/kvm
+            echo "KVM acceleration is available:"
+            ls -l /dev/kvm
+          else
+            echo "Notice: /dev/kvm not found; running with software emulation"
+          fi
+          df -h
+
+      - name: Install Lima (latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(gh release view --repo lima-vm/lima --json tagName --jq .tagName)
+          version=${version#v}
+          tarball="lima-${version}-Linux-$(uname -m).tar.gz"
+          cd "${RUNNER_TEMP}"
+          gh release download "v${version}" --repo lima-vm/lima --pattern "${tarball}" --pattern SHA256SUMS
+          sha256sum --check --ignore-missing SHA256SUMS
+          mkdir lima
+          tar -C lima -xzf "${tarball}"
+          echo "${RUNNER_TEMP}/lima/bin" >>"${GITHUB_PATH}"
+
+      - name: Show versions
+        run: |
+          limactl --version
+          qemu-system-aarch64 --version
+
+      - name: Create and start VM
+        run: |
+          limactl create --tty=false --name=ci \
+            --cpus=2 --memory=4 --disk=10 \
+            --set '.audio.device = ""' \
+            --param gitUserName=ci \
+            --param gitUserEmail=ci@example.com \
+            --param agentInstructions=true \
+            ./coding-sandbox.yaml
+          limactl start --timeout=30m ci
+
+      - name: Verify provisioned environment
+        run: |
+          echo "Verifying CLI tools in VM..."
+          limactl shell ci gh --version
+          limactl shell ci docker info
+          limactl shell ci herdr --version
+          limactl shell ci agy --version
+          limactl shell ci copilot --version
+          limactl shell ci mise --version
+          limactl shell ci fd --version
+          limactl shell ci rg --version
+
+          echo "Verifying Git commit signing inside VM..."
+          limactl shell ci bash -c '
+            set -eux -o pipefail
+            td=$(mktemp -d)
+            cd "$td"
+            git init
+            git commit --allow-empty -m "ci test commit"
+            git verify-commit HEAD
+            rm -rf "$td"
+          '
+
+          echo "Verifying agent instruction files..."
+          limactl shell ci test -f .copilot/copilot-instructions.md
+          limactl shell ci test -f .gemini/config/rules/lima-coding-sandbox.md
+
+          echo "Verifying firewall table..."
+          limactl shell ci sudo -n nft list table inet lima_coding_sandbox
+
+      - name: Verify restart idempotency
+        run: |
+          echo "Saving state before restart..."
+          pubkey_before=$(limactl shell ci cat .ssh/id_ed25519_signing.pub)
+
+          echo "Stopping VM..."
+          limactl stop ci
+
+          echo "Restarting VM..."
+          limactl start --timeout=10m ci
+
+          echo "Verifying state after restart..."
+          pubkey_after=$(limactl shell ci cat .ssh/id_ed25519_signing.pub)
+          if [ "${pubkey_before}" != "${pubkey_after}" ]; then
+            echo "Error: Signing key changed after restart!" >&2
+            exit 1
+          fi
+
+          echo "Verifying no duplicated markers/lines..."
+          limactl shell ci bash -c '
+            set -eux -o pipefail
+            # mise marker in .profile
+            mise_markers=$(grep -c "added by lima-coding-sandbox provision/mise.sh" ~/.profile || true)
+            [ "$mise_markers" -eq 1 ]
+
+            # allowed_signers entry count
+            signers_lines=$(wc -l < ~/.config/git/allowed_signers | tr -d " ")
+            [ "$signers_lines" -eq 1 ]
+
+            # agent instruction markers count
+            instr_markers=$(grep -c "BEGIN lima-coding-sandbox agent-instructions" ~/.copilot/copilot-instructions.md || true)
+            [ "$instr_markers" -eq 1 ]
+          '
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "=== limactl list ==="
+          limactl list || true
+          echo "=== serial and hostagent logs ==="
+          tail -n 100 ~/.lima/ci/*.log 2>/dev/null || true
+          echo "=== cloud-init-output.log ==="
+          limactl shell ci sudo cat /var/log/cloud-init-output.log 2>/dev/null || true
+
+      - name: Cleanup VM
+        if: always()
+        run: |
+          limactl delete --force ci 2>/dev/null || true

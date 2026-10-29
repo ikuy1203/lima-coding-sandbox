@@ -54,7 +54,7 @@ endef
 
 .NOTPARALLEL:
 .DEFAULT_GOAL := help
-.PHONY: help create start shell herdr herdr-remote forward _check-terminfo terminfo stop restart status delete recreate pubkey logs lint
+.PHONY: help create start shell herdr herdr-remote forward _check-terminfo terminfo stop restart status delete recreate pubkey logs lint test
 
 help: ## ターゲットの一覧を表示する
 	@grep -E '^[a-z-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F ':.*## ' '{ printf "  make %-12s %s\n", $$1, $$2 }'
@@ -228,3 +228,6 @@ logs: ## プロビジョニングのログ（cloud-init）の末尾を表示す�
 
 lint: ## テンプレートとスクリプトを検査する
 	./scripts/lint.sh
+
+test: ## プロビジョニングスクリプトと Makefile の回帰テストを実行する
+	bash ./scripts/test.sh

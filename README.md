@@ -92,10 +92,11 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── mise.sh                # mode: user
 │   └── agent-instructions.sh  # mode: user    エージェント向け指示ファイル（既定は無効）
 ├── scripts/
-│   └── lint.sh                # テンプレートとスクリプトの検査（CI でも実行する）
+│   ├── lint.sh                # テンプレートとスクリプトの検査（CI でも実行する）
+│   └── test.sh                # プロビジョニングスクリプトと Makefile の回帰テスト（CI でも実行する）
 └── .github/
     ├── dependabot.yml         # GitHub Actions のアクションの更新を週 1 回確認する
-    └── workflows/ci.yml       # GitHub Actions（scripts/lint.sh を実行する）
+    └── workflows/ci.yml       # GitHub Actions（lint・回帰テスト・実 VM 起動テストを実行する）
 ```
 
 ## 前提
@@ -708,15 +709,29 @@ limactl start --timeout=30m ./coding-sandbox.yaml
 
 ## 開発
 
-`scripts/lint.sh` で、テンプレートの検証（`limactl validate`）と、provision スクリプトおよびテンプレートに書いた probes の shellcheck を実行します（shellcheck は `brew install shellcheck` でインストールする）。
+### 静的検査とローカル回帰テスト
+
+`scripts/lint.sh` で、テンプレートの検証（`limactl validate`）と、スクリプト（`provision/*.sh`、`scripts/*.sh`）およびテンプレートに書いた probes の shellcheck を実行します（shellcheck は `brew install shellcheck` でインストールする）。
 
 ```sh
-./scripts/lint.sh
+make lint    # または ./scripts/lint.sh
 ```
 
-GitHub Actions（`.github/workflows/ci.yml`）でも、main ブランチへの push と pull request のたびに同じスクリプトを実行します。Lima は、`minimumLimaVersion` のバージョンと最新のリリースの 2 つで確認します。
+`scripts/test.sh` で、外部ネットワークやホスト環境に依存しないスタブ中心の高速な回帰テストを実行します。各プロビジョニングスクリプトの冪等性・既存設定保持・途中失敗からの回復や、Makefile の入力値正規化・優先順位・ホストマウント検出を検証します。
 
-push しない間に Lima の新しいリリースでテンプレートの検証が通らなくなっても気づけるように、毎週火曜の 9:23（日本時間）にも同じ CI を実行します。失敗したときは、GitHub の通知（Settings → Notifications → Actions）で知らせが届きます。
+```sh
+make test    # または bash ./scripts/test.sh
+```
+
+### CI（GitHub Actions）
+
+GitHub Actions（`.github/workflows/ci.yml`）では、以下の 2 段階で自動検証を行います。
+
+1. **`lint` ジョブ**: main ブランチへの push とすべての pull request で、`minimumLimaVersion` と最新リリースの 2 つの Lima バージョンで `scripts/lint.sh` および `scripts/test.sh` を実行します。
+2. **`provision-vm` ジョブ**: `ubuntu-24.04-arm`（Apple silicon と同じ aarch64）ランナー上で実際に Lima VM を作成・初回起動し、主要 CLI や Git 署名・ファイアウォール・エージェント指示ファイルの配置と全 probes を検証します。さらに VM の停止・再起動（`limactl stop` → `limactl start`）を行い、署名鍵の不変性や設定重複がないことを確認します。
+   - アクション分数節約のため、週 1 回の定期実行（schedule: 毎週火曜 9:23 JST）、手動実行（`workflow_dispatch`）、または `coding-sandbox.yaml`・`provision/`・`scripts/`・`ci.yml` に変更を含む push / pull request で実行されます。
+
+push しない間に Lima の新しいリリースでテンプレートの検証が通らなくなったり、外部 URL の変更でプロビジョニングが壊れたりしても気づけるように、毎週火曜の 9:23（日本時間）にも同じ CI を定期実行します。失敗したときは、GitHub の通知（Settings → Notifications → Actions）で知らせが届きます。
 
 `ci.yml` で使うアクションは、コミットの SHA で固定しています。Dependabot（`.github/dependabot.yml`）が毎週火曜に新しい版を確認し、公開から 7 日たった新しい版があれば、SHA と末尾のバージョンのコメントを更新する pull request を作ります。
 
