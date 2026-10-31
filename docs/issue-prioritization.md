@@ -2,7 +2,7 @@
 
 本ドキュメントは、`lima-coding-sandbox` の Issue（計 21 件、#6〜#25・#29）について、プロジェクトの目的・セキュリティ・開発効率の観点から評価基準を定め、実装の優先順位とロードマップを整理したものです。
 
-> **最終更新: 2026-10-27** — 完了 9 件 / 未解決 12 件。Phase 1 および **Phase 2**（#10, #9, #18）が完了し、次は **Phase 3**（プロビジョニング堅牢化 & CI 自動テスト）に着手可能です。
+> **最終更新: 2026-11-01** — 完了 11 件 / 未解決 10 件。Phase 1、Phase 2 に続き、**Phase 3**（#13, #24）が進行中です（次は #25, #21）。
 
 ---
 
@@ -14,7 +14,7 @@
 |---|---|:---:|---|
 | Phase 1: Quick Wins & エージェント摩擦解消 | #15, #7, #8, #6, #16, #22 | 6 / 6 | ✅ 完了 |
 | Phase 2: セキュリティ隔離 & 起動高速化 | #10, #9, #18 | 3 / 3 | ✅ 完了 |
-| Phase 3: プロビジョニング堅牢化 & CI 自動テスト | #13, #24, #25, #21 | 0 / 4 | 🔄 次フェーズ（最優先: #13） |
+| Phase 3: プロビジョニング堅牢化 & CI 自動テスト | #13, #24, #25, #21 | 2 / 4 | 🔄 進行中（完了: #13, #24） |
 | Phase 4: 運用 DX & コードベース保守 | #17, #12, #20, #19, #11 | 0 / 5 | 未着手 |
 | Phase 5: ドキュメント再編 & 実験的機能 | #23, #14, #29 | 0 / 3 | 未着手 |
 
@@ -30,15 +30,17 @@
 | [#6](https://github.com/ikuy1203/lima-coding-sandbox/issues/6) | [Agent DX] mise の shims を導入し非対話シェルでのランタイム自動切替を可能にする | [#32](https://github.com/ikuy1203/lima-coding-sandbox/pull/32) | 2026-10-11 | インストーラを `https://mise.run` に切り替え、`~/.profile` で `~/.local/share/mise/shims` を PATH の先頭に追加。probe でログインシェルの PATH 先頭に shims があることを確認 |
 | [#9](https://github.com/ikuy1203/lima-coding-sandbox/issues/9) | [Provisioning] apt-get update の集約と probe 待機処理の最適化による起動高速化 | [#34](https://github.com/ikuy1203/lima-coding-sandbox/pull/34) | 2026-10-11 | `base-packages.sh` を `apt-packages.sh` に改名し、リポジトリ登録（`github-cli.sh`・`docker-engine.sh`）を先行させて `apt-get update` と apt パッケージ導入を 1 回に集約（公式インデックス確認・グループ別フォールバック付き）。`basic tools` と CLI バイナリの probe を一括確認方式に刷新 |
 | [#10](https://github.com/ikuy1203/lima-coding-sandbox/issues/10) | [Security] host.lima.internal（ホストループバック）への通信遮断とポートフォワーディング制御 | [#35](https://github.com/ikuy1203/lima-coding-sandbox/pull/35) | 2026-10-11 | `provision/host-loopback-firewall.sh` と `lima-coding-sandbox-firewall.service` で VM・Docker コンテナから `host.lima.internal` への接続を nftables で遮断（DNS 通信は維持、`blockHostLoopback=false` で無効化可）。`portForwards` で自動ポート転送を全面無効化し、手動転送用の `make forward` を追加 |
-| [#18](https://github.com/ikuy1203/lima-coding-sandbox/issues/18) | [Agent DX] VM の前提をまとめたエージェント向けの指示ファイルを provision で配置する | - | - | VM 前提（マウントなし、sudo、docker ラッパー制約、mise shims、手動ポート転送、nftables 遮断等）をまとめた指示ファイルを配置。Copilot CLI（`~/.copilot/copilot-instructions.md` のマーカーブロック）と Antigravity CLI（`~/.gemini/config/rules/lima-coding-sandbox.md` の always_on ルール）に対応。既定は配置しない方針（`param.agentInstructions: "false"`）とし、オプトインで有効化可能 |
+| [#18](https://github.com/ikuy1203/lima-coding-sandbox/issues/18) | [Agent DX] VM の前提をまとめたエージェント向けの指示ファイルを provision で配置する | [#37](https://github.com/ikuy1203/lima-coding-sandbox/pull/37) | 2026-10-27 | VM 前提（マウントなし、sudo、docker ラッパー制約、mise shims、手動ポート転送、nftables 遮断等）をまとめた指示ファイルを配置。Copilot CLI（`~/.copilot/copilot-instructions.md` のマーカーブロック）と Antigravity CLI（`~/.gemini/config/rules/lima-coding-sandbox.md` の always_on ルール）に対応。既定は配置しない方針（`param.agentInstructions: "false"`）とし、オプトインで有効化可能 |
+| [#13](https://github.com/ikuy1203/lima-coding-sandbox/issues/13) | [CI] GitHub Actions でのプロビジョニングスクリプト実行テストの追加 | [#38](https://github.com/ikuy1203/lima-coding-sandbox/pull/38) | 2026-10-29 | 高速スタブ回帰テストスイート（`scripts/test.sh`）を整備し `scripts/lint.sh` とともにローカルおよび CI で自動実行。GitHub Actions 上で Ubuntu + KVM アクセラレーションによる Lima VM 起動・全 provision & probes 検証、CLI 動作確認、Git 署名検証、VM 再起動による冪等性テストを構築 |
+| [#24](https://github.com/ikuy1203/lima-coding-sandbox/issues/24) | [Provisioning] 外部ダウンロードのタイムアウト・リトライと失敗時の回復を整備する | - | - | 外部インストーラ（herdr, agy, copilot, mise）および apt 鍵（GitHub CLI, Docker Engine）の取得処理にタイムアウト・限定回数リトライ・恒久/一時エラー判別を導入。一時ファイルへのダウンロード完了後にのみ実行・配置し `trap` で確実に消去。スタブ回帰テストスイートを拡張 |
 
 ### 前回からの変更点
 
 - **Phase 2（#10, #9, #18）がすべて完了**: #18（エージェント向け指示ファイル配置）の実装により、Phase 2 の 3 件がすべて完了し、次は **Phase 3**（プロビジョニング堅牢化 & CI 自動テスト）へ移行可能となった。
 - **#18 の実装仕様**: デフォルトは指示ファイルを配置しない（`param.agentInstructions: "false"`）方針とし、オプトイン（`AGENT_INSTRUCTIONS=true`）で有効化。Copilot CLI（`~/.copilot/copilot-instructions.md` のマーカーブロック）と Antigravity CLI（`~/.gemini/config/rules/lima-coding-sandbox.md`）に VM 前提を自動配置し、利用者の独自記述との共存や無効化時のクリーンアップに対応。
 - **後続フェーズへの反映**:
-  - #9 にて `docker-engine.sh` の鍵取得の一時ファイル化や、`github-cli.sh`・`apt-packages.sh` での公式リポジトリ確認が先行実装されたため、Phase 3 の **#24**・**#25** は残る課題（`curl | sh` スクリプトの一時ファイル化・`trap`・タイムアウト/リトライ、CLI の `--version` 実動作確認など）に集中できる。
-  - 次の着手推奨は、CI 上でのプロビジョニング実行テスト基盤を構築する **#13**。
+  - Phase 3 の **#13**（CI 上でのプロビジョニング実行テスト基盤）および **#24**（外部ダウンロードのタイムアウト・リトライ・一時ファイル保護）が完了したため、Phase 3 の残る課題は **#25**（CLI の `--version` 実動作確認）および **#21**（サードパーティツールのバージョンを param で固定できるようにする）。
+  - 次の着手推奨は、ツールのインストール成否を実動作で検証する **#25**。
 
 ---
 
@@ -101,8 +103,8 @@ flowchart TD
     end
 
     subgraph Phase3["Phase 3: プロビジョニング堅牢化 & CI 自動テスト"]
-        I13["#13 CI でのスクリプト実行テスト"]
-        I24["#24 外部DLタイムアウト・リトライ"]
+        I13["#13 CI でのスクリプト実行テスト ✅"]
+        I24["#24 外部DLタイムアウト・リトライ ✅"]
         I25["#25 インストール実動作確認"]
         I21["#21 param によるバージョン固定"]
     end
@@ -137,8 +139,8 @@ flowchart TD
 
     classDef done fill:#d4edda,stroke:#28a745,color:#155724
     classDef next fill:#fff3cd,stroke:#ffc107,color:#856404
-    class I15,I7,I8,I6,I16,I22,I10,I9,I18 done
-    class I13 next
+    class I15,I7,I8,I6,I16,I22,I10,I9,I18,I13,I24 done
+    class I25 next
 ```
 
 ### Phase 1: Quick Wins & エージェント摩擦解消（即効性） — ✅ 完了（2026-10-11）
@@ -161,8 +163,8 @@ flowchart TD
 ### Phase 3: プロビジョニング堅牢化 & CI 自動検証（安定性）
 - **目的**: ネットワーク障害や上流ツールの破壊的変更に強い再現可能な環境を作る。
 - **対象**:
-  - **#13 [CI]**: GitHub Actions 上でプロビジョニングスクリプトを実行するテストジョブを追加（後続のセーフティネット）
-  - **#24 [Provisioning]**: 外部ダウンロード共通処理（タイムアウト、リトライ、一時ファイルダウンロード、`trap` 処理）の導入
+  - ✅ **#13 [CI]**: GitHub Actions 上でプロビジョニングスクリプトを実行するテストジョブおよびローカル回帰テストスイートを追加（PR #38）
+  - ✅ **#24 [Provisioning]**: 外部インストーラおよび apt 鍵の取得処理にタイムアウト・限定回数のリトライ・恒久/一時エラー判別を導入し、一時ファイルへのダウンロード完了後にのみ実行・配置する堅牢化と trap 後始末
   - **#25 [Provisioning]**: probe および provision スクリプトでの `--version` 起動確認・公式リポジトリ確認・Git 署名設定の診断強化
   - **#21 [Provisioning]**: `coding-sandbox.yaml` の `param` や `.env` からツールバージョンを指定可能にする
 
