@@ -37,6 +37,10 @@ log_fail() {
   FAIL_COUNT=$((FAIL_COUNT + 1))
 }
 
+count_dir_entries() {
+  find "$1" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' '
+}
+
 # -----------------------------------------------------------------------------
 # Test Suite 1: provision/git-config.sh
 # -----------------------------------------------------------------------------
@@ -282,17 +286,105 @@ test_cli_provisioning() {
   local fake_bin="${test_dir}/bin"
   mkdir -p "${fake_home}" "${fake_bin}"
 
-  # スタブ curl: URL に応じたインストーラスクリプトを出力する
+  # スタブ curl: -o でのスクリプト出力、-w '%{http_code}'、モード別エラー/リトライ制御に対応
   cat > "${fake_bin}/curl" << 'EOF'
 #!/bin/bash
 set -eu
-if [ "${STUB_CURL_FAIL:-0}" = "1" ]; then
-  exit 1
+
+dest=""
+write_out=""
+url=""
+
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  arg="${args[$i]}"
+  case "$arg" in
+    -o)
+      i=$((i + 1))
+      dest="${args[$i]}"
+      ;;
+    -w)
+      i=$((i + 1))
+      write_out="${args[$i]}"
+      ;;
+    http://*|https://*)
+      url="$arg"
+      ;;
+  esac
+  i=$((i + 1))
+done
+
+if [ -n "${STUB_CURL_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "${STUB_CURL_LOG}"
 fi
-echo "$@" >> "${STUB_CURL_LOG}"
-case "$*" in
-  *herdr.dev/install.sh*)
-    cat << 'INS'
+
+count_file="${STUB_CURL_COUNT_FILE:-}"
+count=1
+if [ -n "${count_file}" ]; then
+  if [ -f "${count_file}" ]; then
+    count=$(($(cat "${count_file}") + 1))
+  fi
+  printf '%s' "${count}" > "${count_file}"
+fi
+
+mode="${STUB_CURL_MODE:-default}"
+
+case "${mode}" in
+  retry_then_success)
+    # 1回目: HTTP 503 (exit 22), 2回目: exit 7 (connect fail), 3回目以降: 成功
+    if [ "${count}" -eq 1 ]; then
+      if [ -n "${write_out}" ]; then printf '503'; fi
+      exit 22
+    elif [ "${count}" -eq 2 ]; then
+      exit 7
+    fi
+    ;;
+  http200_fail_then_success)
+    # 1回目: HTTP 200 受信後の転送中断 (exit 18), 2回目: HTTP 200 受信後のタイムアウト (exit 28), 3回目以降: 成功
+    if [ "${count}" -eq 1 ]; then
+      if [ -n "${dest}" ]; then echo "partial-script-fragment" > "${dest}"; fi
+      if [ -n "${write_out}" ]; then printf '200'; fi
+      exit 18
+    elif [ "${count}" -eq 2 ]; then
+      if [ -n "${write_out}" ]; then printf '200'; fi
+      exit 28
+    fi
+    ;;
+  empty_then_404)
+    # 1回目: HTTP 200・空本文 (exit 0, 0 bytes)
+    # 2回目: HTTP 404 (exit 22) -> 即時失敗すべき（前回の空本文判定が持ち越されてリトライされてはならない）
+    if [ "${count}" -eq 1 ]; then
+      if [ -n "${dest}" ]; then : > "${dest}"; fi
+      if [ -n "${write_out}" ]; then printf '200'; fi
+      exit 0
+    elif [ "${count}" -eq 2 ]; then
+      if [ -n "${write_out}" ]; then printf '404'; fi
+      exit 22
+    fi
+    ;;
+  permanent_404)
+    if [ -n "${write_out}" ]; then printf '404'; fi
+    exit 22
+    ;;
+  timeout)
+    exit 28
+    ;;
+  partial_fail)
+    if [ -n "${dest}" ]; then
+      echo "touch \"${STUB_MARKER_PARTIAL:-/tmp/partial_marker}\"" > "${dest}"
+    fi
+    exit 18
+    ;;
+  fail)
+    exit 1
+    ;;
+esac
+
+if [ -n "${dest}" ]; then
+  case "${url}" in
+    *herdr.dev/install.sh*)
+      cat << 'INS' > "${dest}"
 mkdir -p "$HOME/.local/bin"
 cat << 'BIN' > "$HOME/.local/bin/herdr"
 #!/bin/sh
@@ -300,9 +392,9 @@ echo "herdr stub 0.1.0"
 BIN
 chmod +x "$HOME/.local/bin/herdr"
 INS
-    ;;
-  *antigravity.google/cli/install.sh*)
-    cat << 'INS'
+      ;;
+    *antigravity.google/cli/install.sh*)
+      cat << 'INS' > "${dest}"
 mkdir -p "$HOME/.local/bin"
 cat << 'BIN' > "$HOME/.local/bin/agy"
 #!/bin/sh
@@ -310,9 +402,9 @@ echo "agy stub 0.1.0"
 BIN
 chmod +x "$HOME/.local/bin/agy"
 INS
-    ;;
-  *gh.io/copilot-install*)
-    cat << 'INS'
+      ;;
+    *gh.io/copilot-install*)
+      cat << 'INS' > "${dest}"
 mkdir -p "$HOME/.local/bin"
 cat << 'BIN' > "$HOME/.local/bin/copilot"
 #!/bin/sh
@@ -320,9 +412,9 @@ echo "copilot stub 0.1.0"
 BIN
 chmod +x "$HOME/.local/bin/copilot"
 INS
-    ;;
-  *mise.run*)
-    cat << 'INS'
+      ;;
+    *mise.run*)
+      cat << 'INS' > "${dest}"
 mkdir -p "$HOME/.local/bin"
 cat << 'BIN' > "$HOME/.local/bin/mise"
 #!/bin/sh
@@ -330,23 +422,42 @@ echo "mise stub 0.1.0"
 BIN
 chmod +x "$HOME/.local/bin/mise"
 INS
-    ;;
-  *)
-    echo "unknown url: $*" >&2
-    exit 1
-    ;;
-esac
+      ;;
+    *)
+      printf 'stub-content\n' > "${dest}"
+      ;;
+  esac
+fi
+
+if [ -n "${write_out}" ]; then
+  printf '200'
+fi
+exit 0
 EOF
   chmod +x "${fake_bin}/curl"
 
   local curl_log="${test_dir}/curl.log"
 
-  # 3.1 herdr, agy, copilot の初回実行と冪等性
-  log_test "${suite}: herdr, agy, copilot installation and idempotency"
+  # 高速テスト用設定
+  local test_env=(
+    "HOME=${fake_home}"
+    "PATH=${fake_bin}:${PATH}"
+    "STUB_CURL_LOG=${curl_log}"
+    "DOWNLOAD_RETRY_DELAY=0"
+    "DOWNLOAD_CONNECT_TIMEOUT=1"
+    "DOWNLOAD_MAX_TIME=2"
+    "DOWNLOAD_TOTAL_MAX_TIME=5"
+    "DOWNLOAD_RETRY_COUNT=2"
+  )
+
+  # 3.1 herdr, agy, copilot の初回実行、--compressed の確認、冪等性と一時ファイル消去
+  log_test "${suite}: herdr, agy, copilot installation, --compressed, and idempotency"
+  local tmp_work="${test_dir}/tmp1"
+  mkdir -p "${tmp_work}"
+  : > "${curl_log}"
   (
-    export HOME="${fake_home}"
-    export PATH="${fake_bin}:${PATH}"
-    export STUB_CURL_LOG="${curl_log}"
+    export "${test_env[@]}"
+    export TMPDIR="${tmp_work}"
     bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
     bash "${REPO_ROOT}/provision/antigravity-cli.sh" >/dev/null 2>&1
     bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
@@ -355,11 +466,18 @@ EOF
   local call_count_first
   call_count_first=$(wc -l < "${curl_log}" | tr -d ' ')
 
+  local agy_compressed_called=0
+  if grep -q -- "--compressed.*antigravity.google" "${curl_log}"; then
+    agy_compressed_called=1
+  fi
+
+  local tmp_leftover_first
+  tmp_leftover_first=$(count_dir_entries "${tmp_work}")
+
   # 2 回目実行: バイナリが存在するため curl は呼ばれないはず
   (
-    export HOME="${fake_home}"
-    export PATH="${fake_bin}:${PATH}"
-    export STUB_CURL_LOG="${curl_log}"
+    export "${test_env[@]}"
+    export TMPDIR="${tmp_work}"
     bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
     bash "${REPO_ROOT}/provision/antigravity-cli.sh" >/dev/null 2>&1
     bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
@@ -371,58 +489,281 @@ EOF
   if [ -x "${fake_home}/.local/bin/herdr" ] && \
      [ -x "${fake_home}/.local/bin/agy" ] && \
      [ -x "${fake_home}/.local/bin/copilot" ] && \
+     [ "${agy_compressed_called}" -eq 1 ] && \
      [ "${call_count_first}" -eq 3 ] && \
-     [ "${call_count_second}" -eq 3 ]; then
-    log_pass "${suite}: herdr, agy, copilot installation and idempotency"
+     [ "${call_count_second}" -eq 3 ] && \
+     [ "${tmp_leftover_first}" -eq 0 ]; then
+    log_pass "${suite}: herdr, agy, copilot installation, --compressed, and idempotency"
   else
-    log_fail "${suite}: herdr, agy, copilot idempotency failed"
+    log_fail "${suite}: herdr, agy, copilot idempotency or tmp cleanup failed"
   fi
 
   # 3.2 mise.sh の冪等性と ~/.profile の重複防止
   log_test "${suite}: mise installation and ~/.profile non-duplication"
+  local tmp_work_mise="${test_dir}/tmp_mise"
+  mkdir -p "${tmp_work_mise}"
   (
-    export HOME="${fake_home}"
-    export PATH="${fake_bin}:${PATH}"
-    export STUB_CURL_LOG="${curl_log}"
+    export "${test_env[@]}"
+    export TMPDIR="${tmp_work_mise}"
     bash "${REPO_ROOT}/provision/mise.sh" >/dev/null 2>&1
     bash "${REPO_ROOT}/provision/mise.sh" >/dev/null 2>&1
   )
-  local marker_count
+  local marker_count tmp_leftover_mise
   marker_count=$(grep -c "added by lima-coding-sandbox provision/mise.sh" "${fake_home}/.profile" || true)
-  if [ -x "${fake_home}/.local/bin/mise" ] && [ "${marker_count}" -eq 1 ]; then
+  tmp_leftover_mise=$(count_dir_entries "${tmp_work_mise}")
+  if [ -x "${fake_home}/.local/bin/mise" ] && [ "${marker_count}" -eq 1 ] && [ "${tmp_leftover_mise}" -eq 0 ]; then
     log_pass "${suite}: mise installation and ~/.profile non-duplication"
   else
-    log_fail "${suite}: mise ~/.profile duplicated or binary missing"
+    log_fail "${suite}: mise ~/.profile duplicated or binary missing or tmp leftover"
   fi
 
-  # 3.3 途中失敗からの回復テスト (curl 失敗時のエラー終了と再実行成功)
-  log_test "${suite}: recovery after temporary curl failure"
-  local recovery_home="${test_dir}/recovery_home"
-  mkdir -p "${recovery_home}"
-  local failed=0
-  (
-    export HOME="${recovery_home}"
-    export PATH="${fake_bin}:${PATH}"
-    export STUB_CURL_LOG="${curl_log}"
-    export STUB_CURL_FAIL=1
-    bash "${REPO_ROOT}/provision/mise.sh" >/dev/null 2>&1
-  ) || failed=1
+  # 3.3 一時障害（HTTP 503 / 接続失敗）からの自動リトライ回復
+  log_test "${suite}: recovery within single run from transient network failures"
+  local retry_home="${test_dir}/retry_home"
+  local retry_tmp="${test_dir}/retry_tmp"
+  local retry_count_file="${test_dir}/retry_count.txt"
+  mkdir -p "${retry_home}" "${retry_tmp}"
+  : > "${curl_log}"
+  rm -f "${retry_count_file}"
 
-  if [ "${failed}" -eq 1 ] && [ ! -x "${recovery_home}/.local/bin/mise" ]; then
-    (
-      export HOME="${recovery_home}"
-      export PATH="${fake_bin}:${PATH}"
-      export STUB_CURL_LOG="${curl_log}"
-      export STUB_CURL_FAIL=0
-      bash "${REPO_ROOT}/provision/mise.sh" >/dev/null 2>&1
-    )
-    if [ -x "${recovery_home}/.local/bin/mise" ]; then
-      log_pass "${suite}: recovery after temporary curl failure"
-    else
-      log_fail "${suite}: recovery rerun failed"
-    fi
+  (
+    export "${test_env[@]}"
+    export HOME="${retry_home}"
+    export TMPDIR="${retry_tmp}"
+    export STUB_CURL_MODE="retry_then_success"
+    export STUB_CURL_COUNT_FILE="${retry_count_file}"
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+  )
+
+  local retry_calls=0 tmp_leftover_retry=0
+  if [ -f "${retry_count_file}" ]; then
+    retry_calls=$(cat "${retry_count_file}")
+  fi
+  tmp_leftover_retry=$(count_dir_entries "${retry_tmp}")
+
+  if [ -x "${retry_home}/.local/bin/copilot" ] && [ "${retry_calls}" -eq 3 ] && [ "${tmp_leftover_retry}" -eq 0 ]; then
+    log_pass "${suite}: recovery within single run from transient network failures"
   else
-    log_fail "${suite}: curl failure did not stop script"
+    log_fail "${suite}: transient failure recovery failed (calls: ${retry_calls}, tmp leftover: ${tmp_leftover_retry})"
+  fi
+
+  # 3.4 HTTP 200 受信後の切断・タイムアウトからの自動リトライ回復
+  log_test "${suite}: recovery from connection drop/timeout after HTTP 200 header"
+  local h200_home="${test_dir}/h200_home"
+  local h200_tmp="${test_dir}/h200_tmp"
+  local h200_count_file="${test_dir}/h200_count.txt"
+  mkdir -p "${h200_home}" "${h200_tmp}"
+  : > "${curl_log}"
+  rm -f "${h200_count_file}"
+
+  (
+    export "${test_env[@]}"
+    export HOME="${h200_home}"
+    export TMPDIR="${h200_tmp}"
+    export STUB_CURL_MODE="http200_fail_then_success"
+    export STUB_CURL_COUNT_FILE="${h200_count_file}"
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  )
+
+  local h200_calls=0 tmp_leftover_h200=0
+  if [ -f "${h200_count_file}" ]; then
+    h200_calls=$(cat "${h200_count_file}")
+  fi
+  tmp_leftover_h200=$(count_dir_entries "${h200_tmp}")
+
+  if [ -x "${h200_home}/.local/bin/herdr" ] && [ "${h200_calls}" -eq 3 ] && [ "${tmp_leftover_h200}" -eq 0 ]; then
+    log_pass "${suite}: recovery from connection drop/timeout after HTTP 200 header"
+  else
+    log_fail "${suite}: HTTP 200 recovery failed (calls: ${h200_calls}, tmp leftover: ${tmp_leftover_h200})"
+  fi
+
+  # 3.5 空本文リトライ後の HTTP 404 即時失敗（空本文判定が次試行へ持ち越されないこと）
+  log_test "${suite}: immediate failure on 404 after empty body retry (no state leakage)"
+  local empty404_home="${test_dir}/empty404_home"
+  local empty404_tmp="${test_dir}/empty404_tmp"
+  local empty404_count_file="${test_dir}/empty404_count.txt"
+  local empty404_stderr="${test_dir}/empty404.stderr"
+  mkdir -p "${empty404_home}" "${empty404_tmp}"
+  rm -f "${empty404_count_file}" "${empty404_stderr}"
+
+  local empty404_failed=0
+  (
+    export "${test_env[@]}"
+    export HOME="${empty404_home}"
+    export TMPDIR="${empty404_tmp}"
+    export STUB_CURL_MODE="empty_then_404"
+    export STUB_CURL_COUNT_FILE="${empty404_count_file}"
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >"${empty404_stderr}" 2>&1
+  ) || empty404_failed=1
+
+  local empty404_calls=0 tmp_leftover_empty404=0
+  if [ -f "${empty404_count_file}" ]; then
+    empty404_calls=$(cat "${empty404_count_file}")
+  fi
+  tmp_leftover_empty404=$(count_dir_entries "${empty404_tmp}")
+
+  if [ "${empty404_failed}" -eq 1 ] && [ "${empty404_calls}" -eq 2 ] && [ "${tmp_leftover_empty404}" -eq 0 ] && ! [ -e "${empty404_home}/.local/bin/copilot" ]; then
+    log_pass "${suite}: immediate failure on 404 after empty body retry (no state leakage)"
+  else
+    log_fail "${suite}: empty body to 404 transition leaked retry state (failed: ${empty404_failed}, calls: ${empty404_calls}, tmp leftover: ${tmp_leftover_empty404})"
+  fi
+
+  # 3.6 恒久エラー（HTTP 404）での即時失敗（リトライしないこと）
+  log_test "${suite}: immediate failure on permanent HTTP 404 without retry"
+  local p404_home="${test_dir}/p404_home"
+  local p404_tmp="${test_dir}/p404_tmp"
+  local p404_count_file="${test_dir}/p404_count.txt"
+  local p404_stderr="${test_dir}/p404.stderr"
+  mkdir -p "${p404_home}" "${p404_tmp}"
+  rm -f "${p404_count_file}" "${p404_stderr}"
+
+  local p404_failed=0
+  (
+    export "${test_env[@]}"
+    export HOME="${p404_home}"
+    export TMPDIR="${p404_tmp}"
+    export STUB_CURL_MODE="permanent_404"
+    export STUB_CURL_COUNT_FILE="${p404_count_file}"
+    bash "${REPO_ROOT}/provision/herdr.sh" 2>"${p404_stderr}"
+  ) || p404_failed=1
+
+  local p404_calls=0 tmp_leftover_p404=0 has_404_msg=0
+  if [ -f "${p404_count_file}" ]; then
+    p404_calls=$(cat "${p404_count_file}")
+  fi
+  tmp_leftover_p404=$(count_dir_entries "${p404_tmp}")
+  if grep -q "permanent HTTP 404" "${p404_stderr}"; then
+    has_404_msg=1
+  fi
+
+  if [ "${p404_failed}" -eq 1 ] && [ "${p404_calls}" -eq 1 ] && \
+     [ "${has_404_msg}" -eq 1 ] && [ "${tmp_leftover_p404}" -eq 0 ] && \
+     [ ! -e "${p404_home}/.local/bin/herdr" ]; then
+    log_pass "${suite}: immediate failure on permanent HTTP 404 without retry"
+  else
+    log_fail "${suite}: permanent 404 should fail immediately with 1 call (calls: ${p404_calls}, tmp: ${tmp_leftover_p404})"
+  fi
+
+  # 3.5 タイムアウト（curl exit 28）での最大リトライ到達後の失敗
+  log_test "${suite}: timeout exhaustion fails with cause and cleans up"
+  local tout_home="${test_dir}/tout_home"
+  local tout_tmp="${test_dir}/tout_tmp"
+  local tout_count_file="${test_dir}/tout_count.txt"
+  local tout_stderr="${test_dir}/tout.stderr"
+  mkdir -p "${tout_home}" "${tout_tmp}"
+  rm -f "${tout_count_file}" "${tout_stderr}"
+
+  local tout_failed=0
+  (
+    export "${test_env[@]}"
+    export HOME="${tout_home}"
+    export TMPDIR="${tout_tmp}"
+    export STUB_CURL_MODE="timeout"
+    export STUB_CURL_COUNT_FILE="${tout_count_file}"
+    bash "${REPO_ROOT}/provision/antigravity-cli.sh" 2>"${tout_stderr}"
+  ) || tout_failed=1
+
+  local tout_calls=0 tmp_leftover_tout=0 has_tout_msg=0
+  if [ -f "${tout_count_file}" ]; then
+    tout_calls=$(cat "${tout_count_file}")
+  fi
+  tmp_leftover_tout=$(count_dir_entries "${tout_tmp}")
+  if grep -q "operation timed out" "${tout_stderr}"; then
+    has_tout_msg=1
+  fi
+
+  # DOWNLOAD_RETRY_COUNT=2 なので、初回(1) + リトライ(2) = 計 3 回呼び出されるはず
+  if [ "${tout_failed}" -eq 1 ] && [ "${tout_calls}" -eq 3 ] && \
+     [ "${has_tout_msg}" -eq 1 ] && [ "${tmp_leftover_tout}" -eq 0 ]; then
+    log_pass "${suite}: timeout exhaustion fails with cause and cleans up"
+  else
+    log_fail "${suite}: timeout exhaustion failed (calls: ${tout_calls}, tmp: ${tmp_leftover_tout})"
+  fi
+
+  # 3.6 途中失敗スクリプト片の不実行
+  log_test "${suite}: do not execute partial script on download failure"
+  local partial_home="${test_dir}/partial_home"
+  local partial_tmp="${test_dir}/partial_tmp"
+  local marker_partial="${test_dir}/partial_executed.marker"
+  mkdir -p "${partial_home}" "${partial_tmp}"
+  rm -f "${marker_partial}"
+
+  local partial_failed=0
+  (
+    export "${test_env[@]}"
+    export HOME="${partial_home}"
+    export TMPDIR="${partial_tmp}"
+    export STUB_CURL_MODE="partial_fail"
+    export STUB_MARKER_PARTIAL="${marker_partial}"
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  ) || partial_failed=1
+
+  local tmp_leftover_partial
+  tmp_leftover_partial=$(count_dir_entries "${partial_tmp}")
+
+  if [ "${partial_failed}" -eq 1 ] && [ ! -f "${marker_partial}" ] && [ "${tmp_leftover_partial}" -eq 0 ]; then
+    log_pass "${suite}: do not execute partial script on download failure"
+  else
+    log_fail "${suite}: partial script was executed or tmp leftover"
+  fi
+
+  # 3.8 総時間上限（DOWNLOAD_TOTAL_MAX_TIME）到達時の打ち切りと一時ファイル消去
+  log_test "${suite}: total timeout exhaustion with backoff sleep fails cleanly"
+  local total_home="${test_dir}/total_home"
+  local total_tmp="${test_dir}/total_tmp"
+  local total_stderr="${test_dir}/total.stderr"
+  mkdir -p "${total_home}" "${total_tmp}"
+  rm -f "${total_stderr}"
+
+  local total_failed=0
+  (
+    export "${test_env[@]}"
+    export HOME="${total_home}"
+    export TMPDIR="${total_tmp}"
+    export STUB_CURL_MODE="timeout"
+    export DOWNLOAD_TOTAL_MAX_TIME=1
+    export DOWNLOAD_RETRY_DELAY=1
+    export DOWNLOAD_RETRY_COUNT=5
+    bash "${REPO_ROOT}/provision/herdr.sh" 2>"${total_stderr}"
+  ) || total_failed=1
+
+  local tmp_leftover_total=0 has_total_msg=0
+  tmp_leftover_total=$(count_dir_entries "${total_tmp}")
+  if grep -q "exceeded total timeout" "${total_stderr}"; then
+    has_total_msg=1
+  fi
+
+  if [ "${total_failed}" -eq 1 ] && [ "${has_total_msg}" -eq 1 ] && [ "${tmp_leftover_total}" -eq 0 ]; then
+    log_pass "${suite}: total timeout exhaustion with backoff sleep fails cleanly"
+  else
+    log_fail "${suite}: total timeout failed (failed: ${total_failed}, msg: ${has_total_msg}, tmp: ${tmp_leftover_total})"
+  fi
+
+  # 3.9 6つのプロビジョニングスクリプト間での download_file / is_transient_* 関数の共通性検証
+  log_test "${suite}: consistency of download_file and is_transient_* across all provision scripts"
+  local scripts=(
+    "${REPO_ROOT}/provision/herdr.sh"
+    "${REPO_ROOT}/provision/antigravity-cli.sh"
+    "${REPO_ROOT}/provision/copilot-cli.sh"
+    "${REPO_ROOT}/provision/mise.sh"
+    "${REPO_ROOT}/provision/github-cli.sh"
+    "${REPO_ROOT}/provision/docker-engine.sh"
+  )
+  local ref_funcs
+  ref_funcs=$(awk '/^is_transient_curl_rc\(\)/,/^}$/{print} /^is_transient_http_code\(\)/,/^}$/{print} /^download_file\(\)/,/^}$/{print}' "${scripts[0]}")
+  local drift_found=0
+  for s in "${scripts[@]}"; do
+    local current_funcs
+    current_funcs=$(awk '/^is_transient_curl_rc\(\)/,/^}$/{print} /^is_transient_http_code\(\)/,/^}$/{print} /^download_file\(\)/,/^}$/{print}' "${s}")
+    if [ "${ref_funcs}" != "${current_funcs}" ]; then
+      drift_found=1
+      echo >&2 "Drift detected in $(basename "${s}")"
+    fi
+  done
+  if [ "${drift_found}" -eq 0 ]; then
+    log_pass "${suite}: consistency of download_file and is_transient_* across all provision scripts"
+  else
+    log_fail "${suite}: drift detected in download_file implementations"
   fi
 }
 
@@ -651,6 +992,319 @@ EOF
 }
 
 # -----------------------------------------------------------------------------
+# Test Suite 5: provision/{github-cli,docker-engine}.sh apt keyring and sources
+# -----------------------------------------------------------------------------
+test_apt_key_provisioning() {
+  local suite="provision/apt keyrings"
+  local test_dir="${MASTER_TEST_DIR}/apt_key_provisioning"
+  mkdir -p "${test_dir}"
+
+  local fake_bin="${test_dir}/bin"
+  mkdir -p "${fake_bin}"
+
+  # スタブ dpkg
+  cat > "${fake_bin}/dpkg" << 'EOF'
+#!/bin/bash
+set -eu
+case "$*" in
+  *--print-architecture*)
+    echo "amd64"
+    exit 0
+    ;;
+  *--get-selections*)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+  chmod +x "${fake_bin}/dpkg"
+
+  # スタブ apt-get (macOS ホストなどの非 Linux 環境用)
+  cat > "${fake_bin}/apt-get" << 'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "${fake_bin}/apt-get"
+
+  # スタブ curl: 鍵の出力とエラー制御
+  cat > "${fake_bin}/curl" << 'EOF'
+#!/bin/bash
+set -eu
+
+dest=""
+write_out=""
+url=""
+
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  arg="${args[$i]}"
+  case "$arg" in
+    -o)
+      i=$((i + 1))
+      dest="${args[$i]}"
+      ;;
+    -w)
+      i=$((i + 1))
+      write_out="${args[$i]}"
+      ;;
+    http://*|https://*)
+      url="$arg"
+      ;;
+  esac
+  i=$((i + 1))
+done
+
+if [ -n "${STUB_CURL_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "${STUB_CURL_LOG}"
+fi
+
+mode="${STUB_CURL_MODE:-default}"
+
+case "${mode}" in
+  partial_fail)
+    if [ -n "${dest}" ]; then
+      echo "corrupted-partial-key-data" > "${dest}"
+    fi
+    exit 18
+    ;;
+  fail)
+    exit 1
+    ;;
+esac
+
+if [ -n "${dest}" ]; then
+  case "${url}" in
+    *githubcli-archive-keyring.gpg*)
+      printf 'valid-githubcli-keyring\n' > "${dest}"
+      ;;
+    *download.docker.com/linux/ubuntu/gpg*)
+      printf 'valid-docker-keyring\n' > "${dest}"
+      ;;
+    *)
+      printf 'valid-content\n' > "${dest}"
+      ;;
+  esac
+fi
+
+if [ -n "${write_out}" ]; then
+  printf '200'
+fi
+exit 0
+EOF
+  chmod +x "${fake_bin}/curl"
+
+  local curl_log="${test_dir}/curl.log"
+  local test_env=(
+    "PATH=${fake_bin}:${PATH}"
+    "STUB_CURL_LOG=${curl_log}"
+    "DOWNLOAD_RETRY_DELAY=0"
+    "DOWNLOAD_CONNECT_TIMEOUT=1"
+    "DOWNLOAD_MAX_TIME=2"
+    "DOWNLOAD_TOTAL_MAX_TIME=5"
+    "DOWNLOAD_RETRY_COUNT=2"
+    "DOCKER_UBUNTU_CODENAME=noble"
+  )
+
+  # 5.1 github-cli.sh: 初回作成、冪等性、一時ファイル消去
+  log_test "${suite}: github-cli setup, idempotency, and tmp cleanup"
+  local gh_dir="${test_dir}/gh"
+  local gh_tmp="${test_dir}/gh_tmp"
+  mkdir -p "${gh_dir}" "${gh_tmp}"
+
+  local gh_key="${gh_dir}/githubcli.gpg"
+  local gh_repo="${gh_dir}/githubcli.list"
+
+  : > "${curl_log}"
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${gh_tmp}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    bash "${REPO_ROOT}/provision/github-cli.sh" >/dev/null 2>&1
+  )
+
+  local gh_calls_1 gh_tmp_1
+  gh_calls_1=$(wc -l < "${curl_log}" | tr -d ' ')
+  gh_tmp_1=$(count_dir_entries "${gh_tmp}")
+
+  # 2回目実行: 設定ファイルが存在するため curl は呼ばれない
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${gh_tmp}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    bash "${REPO_ROOT}/provision/github-cli.sh" >/dev/null 2>&1
+  )
+
+  local gh_calls_2
+  gh_calls_2=$(wc -l < "${curl_log}" | tr -d ' ')
+
+  if [ -f "${gh_key}" ] && [ -f "${gh_repo}" ] && \
+     [ "${gh_calls_1}" -eq 1 ] && [ "${gh_calls_2}" -eq 1 ] && \
+     [ "${gh_tmp_1}" -eq 0 ]; then
+    log_pass "${suite}: github-cli setup, idempotency, and tmp cleanup"
+  else
+    log_fail "${suite}: github-cli setup or idempotency failed"
+  fi
+
+  # 5.2 docker-engine.sh: 初回作成、冪等性、一時ファイル消去
+  log_test "${suite}: docker-engine setup, idempotency, and tmp cleanup"
+  local docker_dir="${test_dir}/docker"
+  local docker_tmp="${test_dir}/docker_tmp"
+  mkdir -p "${docker_dir}" "${docker_tmp}"
+
+  local docker_key="${docker_dir}/docker.asc"
+  local docker_src="${docker_dir}/docker.sources"
+  local docker_wrap="${docker_dir}/docker"
+
+  : > "${curl_log}"
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${docker_tmp}"
+    export DOCKER_KEYRING="${docker_key}"
+    export DOCKER_SOURCES="${docker_src}"
+    export DOCKER_WRAPPER="${docker_wrap}"
+    bash "${REPO_ROOT}/provision/docker-engine.sh" >/dev/null 2>&1
+  )
+
+  local docker_calls_1 docker_tmp_1
+  docker_calls_1=$(wc -l < "${curl_log}" | tr -d ' ')
+  docker_tmp_1=$(count_dir_entries "${docker_tmp}")
+
+  # 2回目実行
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${docker_tmp}"
+    export DOCKER_KEYRING="${docker_key}"
+    export DOCKER_SOURCES="${docker_src}"
+    export DOCKER_WRAPPER="${docker_wrap}"
+    bash "${REPO_ROOT}/provision/docker-engine.sh" >/dev/null 2>&1
+  )
+
+  local docker_calls_2
+  docker_calls_2=$(wc -l < "${curl_log}" | tr -d ' ')
+
+  if [ -f "${docker_key}" ] && [ -f "${docker_src}" ] && [ -x "${docker_wrap}" ] && \
+     [ "${docker_calls_1}" -eq 1 ] && [ "${docker_calls_2}" -eq 1 ] && \
+     [ "${docker_tmp_1}" -eq 0 ]; then
+    log_pass "${suite}: docker-engine setup, idempotency, and tmp cleanup"
+  else
+    log_fail "${suite}: docker-engine setup or idempotency failed"
+  fi
+
+  # 5.3 途中失敗時に既存の正常な鍵ファイルを破損させないこと
+  log_test "${suite}: preserve existing valid keyring file on download failure"
+  local corrupt_dir="${test_dir}/corrupt"
+  local corrupt_tmp="${test_dir}/corrupt_tmp"
+  mkdir -p "${corrupt_dir}" "${corrupt_tmp}"
+
+  local corrupt_key="${corrupt_dir}/docker.asc"
+  local corrupt_src="${corrupt_dir}/docker.sources"
+  echo "pre-existing-good-key" > "${corrupt_key}"
+
+  local corrupt_failed=0
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${corrupt_tmp}"
+    export DOCKER_KEYRING="${corrupt_key}"
+    export DOCKER_SOURCES="${corrupt_src}"
+    export DOCKER_WRAPPER="${corrupt_dir}/docker"
+    export STUB_CURL_MODE="partial_fail"
+    bash "${REPO_ROOT}/provision/docker-engine.sh" >/dev/null 2>&1
+  ) || corrupt_failed=1
+
+  local key_content=""
+  if [ -f "${corrupt_key}" ]; then
+    key_content=$(cat "${corrupt_key}")
+  fi
+  local corrupt_tmp_leftover
+  corrupt_tmp_leftover=$(count_dir_entries "${corrupt_tmp}")
+
+  if [ "${corrupt_failed}" -eq 1 ] && \
+     [ "${key_content}" = "pre-existing-good-key" ] && \
+     [ "${corrupt_tmp_leftover}" -eq 0 ]; then
+    log_pass "${suite}: preserve existing valid keyring file on download failure"
+  else
+    log_fail "${suite}: pre-existing keyring was overwritten or corrupted or tmp leftover"
+  fi
+
+  # 5.4 既存の空・破損した Docker ラッパーが正常な実行可能スクリプトに復旧すること
+  log_test "${suite}: recover corrupted or empty existing docker wrapper"
+  local recover_dir="${test_dir}/recover_wrapper"
+  local recover_tmp="${test_dir}/recover_tmp"
+  mkdir -p "${recover_dir}" "${recover_tmp}"
+
+  local rec_key="${recover_dir}/docker.asc"
+  local rec_src="${recover_dir}/docker.sources"
+  local rec_wrap="${recover_dir}/docker"
+  # 既存の鍵・sources が存在し、wrapper が空かつ実行権限なし（壊れた状態）
+  touch "${rec_key}" "${rec_src}"
+  : > "${rec_wrap}"
+  chmod 0644 "${rec_wrap}"
+
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${recover_tmp}"
+    export DOCKER_KEYRING="${rec_key}"
+    export DOCKER_SOURCES="${rec_src}"
+    export DOCKER_WRAPPER="${rec_wrap}"
+    bash "${REPO_ROOT}/provision/docker-engine.sh" >/dev/null 2>&1
+  )
+
+  local wrap_size=0 is_executable=0
+  if [ -f "${rec_wrap}" ]; then
+    wrap_size=$(wc -c < "${rec_wrap}" | tr -d ' ')
+  fi
+  if [ -x "${rec_wrap}" ]; then
+    is_executable=1
+  fi
+  local rec_tmp_leftover
+  rec_tmp_leftover=$(count_dir_entries "${recover_tmp}")
+
+  if [ "${is_executable}" -eq 1 ] && [ "${wrap_size}" -gt 20 ] && \
+     grep -q "exec sudo -n /usr/bin/docker" "${rec_wrap}" && \
+     [ "${rec_tmp_leftover}" -eq 0 ]; then
+    log_pass "${suite}: recover corrupted or empty existing docker wrapper"
+  else
+    log_fail "${suite}: failed to recover corrupted docker wrapper"
+  fi
+
+  # 5.5 docker-engine.sh: /etc/os-release 不在かつ DOCKER_UBUNTU_CODENAME 未設定時のエラー終了
+  log_test "${suite}: fail when Ubuntu codename cannot be determined"
+  local no_os_dir="${test_dir}/no_os"
+  local no_os_tmp="${test_dir}/no_os_tmp"
+  local no_os_stderr="${test_dir}/no_os.stderr"
+  mkdir -p "${no_os_dir}" "${no_os_tmp}"
+
+  local no_os_failed=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export TMPDIR="${no_os_tmp}"
+    export DOCKER_KEYRING="${no_os_dir}/docker.asc"
+    export DOCKER_SOURCES="${no_os_dir}/docker.sources"
+    export DOCKER_WRAPPER="${no_os_dir}/docker"
+    # Linux CI 環境でも確実に検証できるよう、存在しない os-release ファイルを指定し codename も未設定とする
+    export DOCKER_OS_RELEASE_FILE="${no_os_dir}/nonexistent-os-release"
+    bash "${REPO_ROOT}/provision/docker-engine.sh" 2>"${no_os_stderr}"
+  ) || no_os_failed=1
+
+  local tmp_leftover_no_os=0 has_codename_err=0
+  tmp_leftover_no_os=$(count_dir_entries "${no_os_tmp}")
+  if grep -q "could not determine Ubuntu codename" "${no_os_stderr}"; then
+    has_codename_err=1
+  fi
+
+  if [ "${no_os_failed}" -eq 1 ] && [ "${has_codename_err}" -eq 1 ] && [ "${tmp_leftover_no_os}" -eq 0 ]; then
+    log_pass "${suite}: fail when Ubuntu codename cannot be determined"
+  else
+    log_fail "${suite}: did not fail as expected when codename undetermined (failed: ${no_os_failed}, msg: ${has_codename_err}, tmp: ${tmp_leftover_no_os})"
+  fi
+}
+
+# -----------------------------------------------------------------------------
 # Main Runner
 # -----------------------------------------------------------------------------
 echo "Running test suites for lima-coding-sandbox..."
@@ -658,6 +1312,7 @@ test_git_config
 test_agent_instructions
 test_cli_provisioning
 test_makefile_logic
+test_apt_key_provisioning
 
 echo "--------------------------------------------------"
 printf 'Test results: %d passed, %d failed\n' "${PASS_COUNT}" "${FAIL_COUNT}"
