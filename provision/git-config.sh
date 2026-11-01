@@ -92,8 +92,21 @@ fi
 
 # Git の署名設定および実動作を診断する
 diagnose_git_signing() {
-  local commit_sign default_key_cmd
-  commit_sign=$(git config --includes --global --type=bool --get commit.gpgsign 2>/dev/null || echo "false")
+  local commit_sign raw_commit_sign get_status get_err default_key_cmd
+  get_status=0
+  raw_commit_sign=$(git config --includes --global --get commit.gpgsign 2>/dev/null) || get_status=$?
+  if [ "${get_status}" -eq 1 ]; then
+    commit_sign="false"
+  elif [ "${get_status}" -ne 0 ]; then
+    get_err=$(git config --includes --global --get commit.gpgsign 2>&1 || true)
+    echo >&2 "error: failed to query commit.gpgsign: ${get_err}"
+    return 1
+  else
+    if ! commit_sign=$(git config --includes --global --type=bool --get commit.gpgsign 2>/dev/null); then
+      echo >&2 "error: invalid boolean config value for commit.gpgsign: '${raw_commit_sign}'"
+      return 1
+    fi
+  fi
   default_key_cmd=$(git config --includes --global --get gpg.ssh.defaultKeyCommand 2>/dev/null || true)
   local current_signing_key current_gpg_format
   current_signing_key=$(git config --includes --global --get user.signingkey 2>/dev/null || true)

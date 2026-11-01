@@ -33,7 +33,7 @@ is_repo_configured() {
         line = $0
         sub(/#.*$/, "", line)
         if (line !~ /^[ \t]*deb([ \t]|$)/) next
-        key_ok = 0; uri_ok = 0
+        key_ok = 0; uri_ok = 0; suite_ok = 0; comp_ok = 0
         if (match(line, /\[[^]]+\]/)) {
           opts = substr(line, RSTART + 1, RLENGTH - 2)
           rest = substr(line, RSTART + RLENGTH)
@@ -59,7 +59,11 @@ is_repo_configured() {
           sub(/\/+$/, "", target_uri)
           if (entry_uri == target_uri) uri_ok = 1
         }
-        if (key_ok && uri_ok) {
+        if (n_rest >= 2 && rest_arr[2] == "stable") suite_ok = 1
+        for (j = 3; j <= n_rest; j++) {
+          if (rest_arr[j] == "main") comp_ok = 1
+        }
+        if (key_ok && uri_ok && suite_ok && comp_ok) {
           found = 1
           exit 0
         }

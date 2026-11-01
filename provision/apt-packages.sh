@@ -58,9 +58,55 @@ expected_packages=(
   "${docker_packages[@]}"
 )
 
-is_official_gh_installed() {
+is_official_gh_repo_configured() {
   local repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
   local keyring="${GITHUB_CLI_KEYRING:-/etc/apt/keyrings/githubcli-archive-keyring.gpg}"
+  [ -s "${keyring}" ] && [ -s "${repo_list}" ] || return 1
+  awk -v key="${keyring}" -v uri="https://cli.github.com/packages" '
+    {
+      line = $0
+      sub(/#.*$/, "", line)
+      if (line !~ /^[ \t]*deb([ \t]|$)/) next
+      key_ok = 0; uri_ok = 0; suite_ok = 0; comp_ok = 0
+      if (match(line, /\[[^]]+\]/)) {
+        opts = substr(line, RSTART + 1, RLENGTH - 2)
+        rest = substr(line, RSTART + RLENGTH)
+        n_opts = split(opts, opt_arr, /[ \t]+/)
+        for (i = 1; i <= n_opts; i++) {
+          if (opt_arr[i] ~ /^signed-by=/) {
+            val = opt_arr[i]
+            sub(/^signed-by=/, "", val)
+            gsub(/^"|"$/, "", val)
+            if (val == key) key_ok = 1
+          }
+        }
+      } else {
+        rest = line
+        sub(/^[ \t]*deb[ \t]+/, "", rest)
+      }
+      sub(/^[ \t]+/, "", rest)
+      n_rest = split(rest, rest_arr, /[ \t]+/)
+      if (n_rest >= 1) {
+        entry_uri = rest_arr[1]
+        sub(/\/+$/, "", entry_uri)
+        target_uri = uri
+        sub(/\/+$/, "", target_uri)
+        if (entry_uri == target_uri) uri_ok = 1
+      }
+      if (n_rest >= 2 && rest_arr[2] == "stable") suite_ok = 1
+      for (j = 3; j <= n_rest; j++) {
+        if (rest_arr[j] == "main") comp_ok = 1
+      }
+      if (key_ok && uri_ok && suite_ok && comp_ok) {
+        found = 1
+        exit 0
+      }
+    }
+    END { exit !found }
+  ' "${repo_list}" 2>/dev/null
+}
+
+is_official_gh_installed() {
   local verify_timeout="${CLI_VERIFY_TIMEOUT:-10}"
   local gh_bin="${GH_BIN:-/usr/bin/gh}"
 
@@ -68,8 +114,8 @@ is_official_gh_installed() {
   # shellcheck disable=SC2016
   [ "$(dpkg-query -W -f='${db:Status-Status}' gh 2>/dev/null)" = installed ] || return 1
 
-  # 2. 公式 apt リポジトリ設定が存在するか
-  [ -s "${repo_list}" ] && [ -s "${keyring}" ] || return 1
+  # 2. 公式 apt リポジトリ設定が正常に存在するか
+  is_official_gh_repo_configured || return 1
 
   # 3. Maintainer が公式 GitHub 由来か（positive validation: メタデータ取得失敗や非公式は拒否）
   local maintainer

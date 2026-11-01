@@ -42,7 +42,7 @@
   - 各 CLI（herdr, agy, copilot, mise）の `verify_cli` によるタイムアウト付き `--version` 起動確認を導入し、破損バイナリの自動再インストールとインストーラ実行直後の動作確認を整備。
   - `git-config.sh` で鍵ペア整合性確認、独自設定保持、および一時リポジトリでの署名コミット・検証診断を導入。
   - `coding-sandbox.yaml` の probes（basic tools, CLI tools, Git 署名）を実動作確認・エラー理由明示に強化。
-  - `scripts/test.sh` に 35 件の新規テストを追加（計 64 件）。
+  - `scripts/test.sh` に 43 件の新規テストを追加（計 72 件）。
 - **後続フェーズへの反映**:
   - Phase 3 の残る課題は **#21**（サードパーティツールのバージョンを param で固定できるようにする）。
   - 次の着手推奨は **#21**。

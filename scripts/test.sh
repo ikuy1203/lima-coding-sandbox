@@ -497,6 +497,62 @@ EOF
   else
     log_fail "${suite}: passphrase-protected key with missing .pub caused failure"
   fi
+
+  # 1.18 commit.gpgsign に不正なブール値（例: treu）が設定されている場合はエラー終了すること
+  log_test "${suite}: fail when commit.gpgsign contains an invalid boolean value"
+  local invalid_bool_home="${test_dir}/invalid_bool_home"
+  mkdir -p "${invalid_bool_home}/.ssh"
+  local invalid_bool_gitconfig="${invalid_bool_home}/.gitconfig"
+  git config -f "${invalid_bool_gitconfig}" commit.gpgsign "treu"
+
+  local invalid_bool_failed=0
+  local invalid_bool_stderr="${test_dir}/invalid_bool.stderr"
+  (
+    export HOME="${invalid_bool_home}"
+    export XDG_CONFIG_HOME="${invalid_bool_home}/.config"
+    export GIT_CONFIG_GLOBAL="${invalid_bool_gitconfig}"
+    bash "${REPO_ROOT}/provision/git-config.sh" </dev/null 2>"${invalid_bool_stderr}"
+  ) || invalid_bool_failed=1
+
+  local invalid_bool_reported=0
+  if grep -q "invalid boolean config value for commit.gpgsign: 'treu'" "${invalid_bool_stderr}" 2>/dev/null; then
+    invalid_bool_reported=1
+  fi
+
+  if [ "${invalid_bool_failed}" -eq 1 ] && [ "${invalid_bool_reported}" -eq 1 ]; then
+    log_pass "${suite}: fail when commit.gpgsign contains an invalid boolean value"
+  else
+    log_fail "${suite}: invalid boolean commit.gpgsign was not rejected with diagnostic error"
+  fi
+
+  # 1.19 .gitconfig に構文エラーがあり git config の取得自体が失敗（exit != 1）した場合は診断エラー終了すること
+  log_test "${suite}: fail when git config query fails due to broken syntax"
+  local syntax_err_home="${test_dir}/syntax_err_home"
+  mkdir -p "${syntax_err_home}/.ssh"
+  local syntax_err_gitconfig="${syntax_err_home}/.gitconfig"
+  echo "[broken section" > "${syntax_err_gitconfig}"
+
+  local syntax_err_failed=0
+  local syntax_err_stderr="${test_dir}/syntax_err.stderr"
+  (
+    export HOME="${syntax_err_home}"
+    export GIT_CONFIG_GLOBAL="${syntax_err_gitconfig}"
+    fn_def=$(awk '/^diagnose_git_signing\(\) *\{/ { p=1 } p { print; b += gsub(/\{/, "{") - gsub(/\}/, "}"); if (b == 0) exit }' "${REPO_ROOT}/provision/git-config.sh")
+    eval "${fn_def}"
+    key="${syntax_err_home}/.ssh/id_ed25519_signing"
+    diagnose_git_signing
+  ) 2>"${syntax_err_stderr}" || syntax_err_failed=1
+
+  local syntax_err_reported=0
+  if grep -q "failed to query commit.gpgsign:" "${syntax_err_stderr}" 2>/dev/null; then
+    syntax_err_reported=1
+  fi
+
+  if [ "${syntax_err_failed}" -eq 1 ] && [ "${syntax_err_reported}" -eq 1 ]; then
+    log_pass "${suite}: fail when git config query fails due to broken syntax"
+  else
+    log_fail "${suite}: broken .gitconfig syntax was not rejected with query error"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -1912,6 +1968,35 @@ EOF
   else
     log_fail "${suite}: docker-engine failed to reconfigure disabled or misconfigured deb822 sources"
   fi
+
+  # 5.7 docker-engine.sh: Types が deb-src のみ、または Suites/Components が欠落している場合は再設定すること
+  log_test "${suite}: docker-engine reconfigures when Types is deb-src only or suite/components missing"
+  cat > "${deb822_src}" << EOF
+Types: deb-src
+URIs: https://download.docker.com/linux/ubuntu
+Suites: noble
+Components: stable
+Signed-By: ${deb822_key}
+EOF
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${deb822_tmp}"
+    export DOCKER_KEYRING="${deb822_key}"
+    export DOCKER_SOURCES="${deb822_src}"
+    export DOCKER_WRAPPER="${deb822_dir}/docker"
+    bash "${REPO_ROOT}/provision/docker-engine.sh" >/dev/null 2>&1
+  )
+
+  local deb822_fixed_types=0
+  if grep -q "Types:.*deb\([ \t]\|$\)" "${deb822_src}" 2>/dev/null && ! grep -q "^Types:[ \t]*deb-src[ \t]*$" "${deb822_src}" 2>/dev/null; then
+    deb822_fixed_types=1
+  fi
+
+  if [ "${deb822_fixed_types}" -eq 1 ]; then
+    log_pass "${suite}: docker-engine reconfigures when Types is deb-src only or suite/components missing"
+  else
+    log_fail "${suite}: docker-engine failed to reconfigure deb822 sources with deb-src only"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -2289,6 +2374,53 @@ EOF
   else
     log_fail "${suite}: apt-packages fell back to rogue PATH command instead of managing gh"
   fi
+
+  # 6.10 github-cli.sh: suite や component が欠落・不正な場合はスキップせず再設定すること
+  log_test "${suite}: github-cli reconfigures when suite or component is invalid"
+  echo "deb [signed-by=${gh_key}] https://cli.github.com/packages test unstable" > "${gh_repo}"
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${gh_tmp}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    bash "${REPO_ROOT}/provision/github-cli.sh" >/dev/null 2>&1
+  )
+
+  local has_fixed_suite_comp=0
+  if grep -Eq '^[[:space:]]*deb[[:space:]]+\[[^]]*\][[:space:]]+https://cli\.github\.com/packages[[:space:]]+stable[[:space:]]+.*main' "${gh_repo}" 2>/dev/null; then
+    has_fixed_suite_comp=1
+  fi
+
+  if [ "${has_fixed_suite_comp}" -eq 1 ]; then
+    log_pass "${suite}: github-cli reconfigures when suite or component is invalid"
+  else
+    log_fail "${suite}: github-cli failed to reconfigure on invalid suite or component"
+  fi
+
+  # 6.11 apt-packages.sh: repo_list がコメントのみ、または suite/component/key 不正時は install gh を呼ぶこと
+  log_test "${suite}: apt-packages detects invalid or commented-out repo list and triggers install"
+  echo "# deb [signed-by=${gh_key}] https://cli.github.com/packages stable main" > "${gh_repo}"
+  : > "${apt_log}"
+  rm -f "${installed_flag}"
+  (
+    export "${test_env[@]}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    export STUB_GH_MAINTAINER="GitHub <support@github.com>"
+    export STUB_GH_MODE="default"
+    bash "${REPO_ROOT}/provision/apt-packages.sh" >/dev/null 2>&1
+  ) || true
+
+  local invalid_repo_detected=0
+  if grep -q "install.*gh" "${apt_log}"; then
+    invalid_repo_detected=1
+  fi
+
+  if [ "${invalid_repo_detected}" -eq 1 ]; then
+    log_pass "${suite}: apt-packages detects invalid or commented-out repo list and triggers install"
+  else
+    log_fail "${suite}: apt-packages accepted commented-out or invalid repo list as valid"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -2369,7 +2501,7 @@ EOF
   local test_key="${test_dir}/key.gpg"
   local test_repo="${test_dir}/repo.list"
   echo "key" > "${test_key}"
-  echo "deb https://cli.github.com/packages stable main" > "${test_repo}"
+  echo "deb [signed-by=${test_key}] https://cli.github.com/packages stable main" > "${test_repo}"
 
   # 7.1 probe basic tools: 公式 gh で成功、Ubuntu 版 gh で理由表示して失敗
   log_test "${suite}: probe basic tools verifies official gh and reports failure cause"
@@ -2605,6 +2737,84 @@ EOF
     log_pass "${suite}: probe basic tools does not fall back to PATH command when managed gh is missing"
   else
     log_fail "${suite}: probe[1] fell back to PATH command or did not report missing gh"
+  fi
+
+  # 7.7 probe Git commit signing: commit.gpgsign に不正なブール値（例: treu）がある場合は失敗理由を報告すること
+  log_test "${suite}: probe Git commit signing rejects invalid boolean value for commit.gpgsign"
+  local p7_invalid_gitconfig="${fake_home}/.gitconfig_invalid"
+  git config -f "${p7_invalid_gitconfig}" commit.gpgsign "treu"
+  local p7_invalid_stderr="${test_dir}/p7_invalid.stderr"
+  local p7_invalid_failed=0
+  (
+    export HOME="${fake_home}"
+    export GIT_CONFIG_GLOBAL="${p7_invalid_gitconfig}"
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p7_script}" 2>"${p7_invalid_stderr}"
+  ) || p7_invalid_failed=1
+
+  local p7_invalid_cause=0
+  if grep -q "invalid boolean config value for commit.gpgsign: 'treu'" "${p7_invalid_stderr}" 2>/dev/null; then
+    p7_invalid_cause=1
+  fi
+
+  if [ "${p7_invalid_failed}" -eq 1 ] && [ "${p7_invalid_cause}" -eq 1 ]; then
+    log_pass "${suite}: probe Git commit signing rejects invalid boolean value for commit.gpgsign"
+  else
+    log_fail "${suite}: probe Git commit signing failed to reject invalid boolean value for commit.gpgsign"
+  fi
+
+  # 7.8 probe basic tools: repo_list がコメントのみまたは不正な場合、リポジトリ不正を報告して失敗すること
+  log_test "${suite}: probe basic tools rejects invalid or commented-out repo list"
+  local p1_badrepo_stderr="${test_dir}/p1_badrepo.stderr"
+  local p1_badrepo_list="${test_dir}/badrepo.list"
+  echo "# deb [signed-by=${test_key}] https://cli.github.com/packages stable main" > "${p1_badrepo_list}"
+  local p1_badrepo_failed=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export GH_BIN="${fake_bin}/gh"
+    export GITHUB_CLI_KEYRING="${test_key}"
+    export GITHUB_CLI_REPO_LIST="${p1_badrepo_list}"
+    export STUB_PROBE_GH_MAINTAINER="GitHub <support@github.com>"
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p1_script}" 2>"${p1_badrepo_stderr}"
+  ) || p1_badrepo_failed=1
+
+  local p1_badrepo_cause=0
+  if grep -q "gh (official apt repository not configured or invalid)" "${p1_badrepo_stderr}" 2>/dev/null; then
+    p1_badrepo_cause=1
+  fi
+
+  if [ "${p1_badrepo_failed}" -eq 1 ] && [ "${p1_badrepo_cause}" -eq 1 ]; then
+    log_pass "${suite}: probe basic tools rejects invalid or commented-out repo list"
+  else
+    log_fail "${suite}: probe[1] accepted commented-out or invalid repo list as valid"
+  fi
+
+  # 7.9 probe Git commit signing: .gitconfig に構文エラーがある場合は失敗理由を報告すること
+  log_test "${suite}: probe Git commit signing rejects syntax error in .gitconfig"
+  local p7_syntax_gitconfig="${fake_home}/.gitconfig_syntax"
+  echo "[broken section" > "${p7_syntax_gitconfig}"
+  local p7_syntax_stderr="${test_dir}/p7_syntax.stderr"
+  local p7_syntax_failed=0
+  (
+    export HOME="${fake_home}"
+    export GIT_CONFIG_GLOBAL="${p7_syntax_gitconfig}"
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p7_script}" 2>"${p7_syntax_stderr}"
+  ) || p7_syntax_failed=1
+
+  local p7_syntax_cause=0
+  if grep -q "failed to query commit.gpgsign:" "${p7_syntax_stderr}" 2>/dev/null; then
+    p7_syntax_cause=1
+  fi
+
+  if [ "${p7_syntax_failed}" -eq 1 ] && [ "${p7_syntax_cause}" -eq 1 ]; then
+    log_pass "${suite}: probe Git commit signing rejects syntax error in .gitconfig"
+  else
+    log_fail "${suite}: probe Git commit signing failed to reject syntax error in .gitconfig"
   fi
 }
 

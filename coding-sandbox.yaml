@@ -143,12 +143,57 @@ probes:
     set -eu -o pipefail
     # provision/apt-packages.sh で入れるパッケージ（gh を含む）の主なコマンド
     cmds=(git curl wget jq less ssh gcc make rg fd fdfind unzip zip tree shellcheck nft pip3 pipx node npm)
+    check_gh_repo() {
+      local repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
+      local keyring="${GITHUB_CLI_KEYRING:-/etc/apt/keyrings/githubcli-archive-keyring.gpg}"
+      [ -s "${keyring}" ] && [ -s "${repo_list}" ] || return 1
+      awk -v key="${keyring}" -v uri="https://cli.github.com/packages" '
+        {
+          line = $0
+          sub(/#.*$/, "", line)
+          if (line !~ /^[ \t]*deb([ \t]|$)/) next
+          key_ok = 0; uri_ok = 0; suite_ok = 0; comp_ok = 0
+          if (match(line, /\[[^]]+\]/)) {
+            opts = substr(line, RSTART + 1, RLENGTH - 2)
+            rest = substr(line, RSTART + RLENGTH)
+            n_opts = split(opts, opt_arr, /[ \t]+/)
+            for (i = 1; i <= n_opts; i++) {
+              if (opt_arr[i] ~ /^signed-by=/) {
+                val = opt_arr[i]
+                sub(/^signed-by=/, "", val)
+                gsub(/^"|"$/, "", val)
+                if (val == key) key_ok = 1
+              }
+            }
+          } else {
+            rest = line
+            sub(/^[ \t]*deb[ \t]+/, "", rest)
+          }
+          sub(/^[ \t]+/, "", rest)
+          n_rest = split(rest, rest_arr, /[ \t]+/)
+          if (n_rest >= 1) {
+            entry_uri = rest_arr[1]
+            sub(/\/+$/, "", entry_uri)
+            target_uri = uri
+            sub(/\/+$/, "", target_uri)
+            if (entry_uri == target_uri) uri_ok = 1
+          }
+          if (n_rest >= 2 && rest_arr[2] == "stable") suite_ok = 1
+          for (j = 3; j <= n_rest; j++) {
+            if (rest_arr[j] == "main") comp_ok = 1
+          }
+          if (key_ok && uri_ok && suite_ok && comp_ok) {
+            found = 1
+            exit 0
+          }
+        }
+        END { exit !found }
+      ' "${repo_list}" 2>/dev/null
+    }
     check_gh() {
       local gh_cmd="${GH_BIN:-/usr/bin/gh}"
       [ -x "${gh_cmd}" ] || return 1
-      local repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
-      local keyring="${GITHUB_CLI_KEYRING:-/etc/apt/keyrings/githubcli-archive-keyring.gpg}"
-      [ -s "${repo_list}" ] && [ -s "${keyring}" ] || return 1
+      check_gh_repo || return 1
       # shellcheck disable=SC2016
       [ "$(dpkg-query -W -f='${db:Status-Status}' gh 2>/dev/null)" = installed ] || return 1
       local maintainer
@@ -169,16 +214,14 @@ probes:
       check_gh || printf '%s ' "gh"
     }
     gh_status() {
-      local repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
-      local keyring="${GITHUB_CLI_KEYRING:-/etc/apt/keyrings/githubcli-archive-keyring.gpg}"
       local gh_cmd="${GH_BIN:-/usr/bin/gh}"
       if [ ! -x "${gh_cmd}" ]; then
         echo "gh (${gh_cmd} not found or not executable)"
         return 0
       fi
 
-      if [ ! -s "${repo_list}" ] || [ ! -s "${keyring}" ]; then
-        echo "gh (official apt repository not configured)"
+      if ! check_gh_repo; then
+        echo "gh (official apt repository not configured or invalid)"
         return 0
       fi
 
@@ -372,8 +415,21 @@ probes:
     signing_failure_reason=""
     verify_signing() {
       signing_failure_reason=""
-      local commit_sign gpg_format signing_key default_key_cmd
-      commit_sign=$(git config --includes --global --type=bool --get commit.gpgsign 2>/dev/null || echo "false")
+      local commit_sign raw_commit_sign get_status get_err gpg_format signing_key default_key_cmd
+      get_status=0
+      raw_commit_sign=$(git config --includes --global --get commit.gpgsign 2>/dev/null) || get_status=$?
+      if [ "${get_status}" -eq 1 ]; then
+        commit_sign="false"
+      elif [ "${get_status}" -ne 0 ]; then
+        get_err=$(git config --includes --global --get commit.gpgsign 2>&1 || true)
+        signing_failure_reason="failed to query commit.gpgsign: ${get_err}"
+        return 1
+      else
+        if ! commit_sign=$(git config --includes --global --type=bool --get commit.gpgsign 2>/dev/null); then
+          signing_failure_reason="invalid boolean config value for commit.gpgsign: '${raw_commit_sign}'"
+          return 1
+        fi
+      fi
       gpg_format=$(git config --includes --global --get gpg.format 2>/dev/null || true)
       signing_key=$(git config --includes --global --get user.signingkey 2>/dev/null || true)
       signing_key="${signing_key/#\~/$HOME}"

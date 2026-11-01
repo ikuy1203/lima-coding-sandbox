@@ -169,12 +169,26 @@ download_file() {
   return 1
 }
 
+get_ubuntu_codename() {
+  local ubuntu_codename="${DOCKER_UBUNTU_CODENAME:-}"
+  local os_release_file="${DOCKER_OS_RELEASE_FILE:-/etc/os-release}"
+  if [ -z "${ubuntu_codename}" ] && [ -f "${os_release_file}" ]; then
+    # shellcheck disable=SC1090
+    . "${os_release_file}"
+    ubuntu_codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+  fi
+  echo "${ubuntu_codename}"
+}
+
 is_repo_configured() {
+  local codename
+  codename="$(get_ubuntu_codename)"
+  [ -n "${codename}" ] || return 1
   [ -s "${keyring}" ] && [ -s "${sources}" ] && \
-    awk -v uri="https://download.docker.com/linux/ubuntu" -v key="${keyring}" '
+    awk -v uri="https://download.docker.com/linux/ubuntu" -v key="${keyring}" -v suite="${codename}" '
       BEGIN { RS = ""; found = 0 }
       {
-        has_uri = 0; has_key = 0; enabled = 1
+        has_type = 0; has_uri = 0; has_suite = 0; has_comp = 0; has_key = 0; enabled = 1
         n = split($0, lines, "\n")
         for (i = 1; i <= n; i++) {
           line = lines[i]
@@ -183,6 +197,14 @@ is_repo_configured() {
           sub(/[ \t]+$/, "", line)
           if (line == "") continue
           if (tolower(line) ~ /^enabled:[ \t]*(no|false|0)([ \t]|$)/) enabled = 0
+          if (line ~ /^Types:[ \t]+/) {
+            val = line
+            sub(/^Types:[ \t]+/, "", val)
+            n_types = split(val, twords, /[ \t]+/)
+            for (j = 1; j <= n_types; j++) {
+              if (twords[j] == "deb") has_type = 1
+            }
+          }
           if (line ~ /^URIs:[ \t]+/) {
             val = line
             sub(/^URIs:[ \t]+/, "", val)
@@ -195,6 +217,22 @@ is_repo_configured() {
               if (u == target_u) has_uri = 1
             }
           }
+          if (line ~ /^Suites:[ \t]+/) {
+            val = line
+            sub(/^Suites:[ \t]+/, "", val)
+            n_suites = split(val, swords, /[ \t]+/)
+            for (j = 1; j <= n_suites; j++) {
+              if (swords[j] == suite) has_suite = 1
+            }
+          }
+          if (line ~ /^Components:[ \t]+/) {
+            val = line
+            sub(/^Components:[ \t]+/, "", val)
+            n_comps = split(val, cwords, /[ \t]+/)
+            for (j = 1; j <= n_comps; j++) {
+              if (cwords[j] == "stable") has_comp = 1
+            }
+          }
           if (line ~ /^Signed-By:[ \t]+/) {
             val = line
             sub(/^Signed-By:[ \t]+/, "", val)
@@ -203,7 +241,7 @@ is_repo_configured() {
             if (val == key) has_key = 1
           }
         }
-        if (has_uri && has_key && enabled) found = 1
+        if (has_type && has_uri && has_suite && has_comp && has_key && enabled) found = 1
       }
       END { exit !found }
     ' "${sources}" 2>/dev/null
@@ -234,17 +272,9 @@ if ! is_repo_configured; then
   rm -f "${out_key}"
 
   install -m 0755 -d "$(dirname "${sources}")"
-  ubuntu_codename="${DOCKER_UBUNTU_CODENAME:-}"
-  os_release_file="${DOCKER_OS_RELEASE_FILE:-/etc/os-release}"
+  ubuntu_codename="$(get_ubuntu_codename)"
   if [ -z "${ubuntu_codename}" ]; then
-    if [ -f "${os_release_file}" ]; then
-      # shellcheck disable=SC1090
-      . "${os_release_file}"
-      ubuntu_codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
-    fi
-  fi
-  if [ -z "${ubuntu_codename}" ]; then
-    echo >&2 "error: could not determine Ubuntu codename from ${os_release_file} (and DOCKER_UBUNTU_CODENAME is unset)"
+    echo >&2 "error: could not determine Ubuntu codename from ${DOCKER_OS_RELEASE_FILE:-/etc/os-release} (and DOCKER_UBUNTU_CODENAME is unset)"
     exit 1
   fi
 
