@@ -184,11 +184,15 @@ is_repo_configured() {
   local codename
   codename="$(get_ubuntu_codename)"
   [ -n "${codename}" ] || return 1
+  local native_arch
+  native_arch="$(dpkg --print-architecture 2>/dev/null || true)"
+  [ -n "${native_arch}" ] || return 1
   [ -s "${keyring}" ] && [ -s "${sources}" ] && \
-    awk -v uri="https://download.docker.com/linux/ubuntu" -v key="${keyring}" -v suite="${codename}" '
+    awk -v uri="https://download.docker.com/linux/ubuntu" -v key="${keyring}" -v suite="${codename}" -v arch="${native_arch}" '
       BEGIN { RS = ""; found = 0 }
       {
         has_type = 0; has_uri = 0; has_suite = 0; has_comp = 0; has_key = 0; enabled = 1
+        has_set = 0; set_has_native = 0; add_native = 0; rem_native = 0
         n = split($0, lines, "\n")
         for (i = 1; i <= n; i++) {
           line = lines[i]
@@ -197,12 +201,38 @@ is_repo_configured() {
           sub(/[ \t]+$/, "", line)
           if (line == "") continue
           if (tolower(line) ~ /^enabled:[ \t]*(no|false|0)([ \t]|$)/) enabled = 0
-          if (line ~ /^Types:[ \t]+/) {
+          if (line ~ /^types:[ \t]+/ || line ~ /^Types:[ \t]+/) {
             val = line
-            sub(/^Types:[ \t]+/, "", val)
+            sub(/^[a-zA-Z]+:[ \t]+/, "", val)
             n_types = split(val, twords, /[ \t]+/)
             for (j = 1; j <= n_types; j++) {
               if (twords[j] == "deb") has_type = 1
+            }
+          }
+          if (line ~ /^[aA]rchitectures:[ \t]+/) {
+            val = line
+            sub(/^[a-zA-Z]+:[ \t]+/, "", val)
+            has_set = 1
+            set_has_native = 0
+            n_archs = split(val, awords, /[ \t]+/)
+            for (j = 1; j <= n_archs; j++) {
+              if (awords[j] == arch) set_has_native = 1
+            }
+          }
+          if (line ~ /^[aA]rchitectures-[aA]dd:[ \t]+/) {
+            val = line
+            sub(/^[a-zA-Z-]+:[ \t]+/, "", val)
+            n_archs = split(val, awords, /[ \t]+/)
+            for (j = 1; j <= n_archs; j++) {
+              if (awords[j] == arch) add_native = 1
+            }
+          }
+          if (line ~ /^[aA]rchitectures-[rR]emove:[ \t]+/) {
+            val = line
+            sub(/^[a-zA-Z-]+:[ \t]+/, "", val)
+            n_archs = split(val, awords, /[ \t]+/)
+            for (j = 1; j <= n_archs; j++) {
+              if (awords[j] == arch) rem_native = 1
             }
           }
           if (line ~ /^URIs:[ \t]+/) {
@@ -241,7 +271,11 @@ is_repo_configured() {
             if (val == key) has_key = 1
           }
         }
-        if (has_type && has_uri && has_suite && has_comp && has_key && enabled) found = 1
+        has_native = (has_set ? set_has_native : 1)
+        if (add_native) has_native = 1
+        if (rem_native) has_native = 0
+        arch_ok = has_native
+        if (has_type && has_uri && has_suite && has_comp && has_key && arch_ok && enabled) found = 1
       }
       END { exit !found }
     ' "${sources}" 2>/dev/null

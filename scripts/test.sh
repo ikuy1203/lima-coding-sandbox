@@ -2035,6 +2035,67 @@ EOF
   else
     log_fail "${suite}: docker-engine failed to reconfigure deb822 sources with deb-src only"
   fi
+
+  # 5.8 docker-engine.sh: Architectures が native_arch を除外している場合は再設定すること
+  log_test "${suite}: docker-engine reconfigures when Architectures excludes native arch"
+  cat > "${deb822_src}" << EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: noble
+Components: stable
+Architectures: arm64
+Signed-By: ${deb822_key}
+EOF
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${deb822_tmp}"
+    export DOCKER_KEYRING="${deb822_key}"
+    export DOCKER_SOURCES="${deb822_src}"
+    export DOCKER_WRAPPER="${deb822_dir}/docker"
+    bash "${REPO_ROOT}/provision/docker-engine.sh" >/dev/null 2>&1
+  )
+
+  local deb822_fixed_arch=0
+  if grep -Eq "^Architectures:[[:space:]]+amd64" "${deb822_src}" 2>/dev/null; then
+    deb822_fixed_arch=1
+  fi
+
+  if [ "${deb822_fixed_arch}" -eq 1 ]; then
+    log_pass "${suite}: docker-engine reconfigures when Architectures excludes native arch"
+  else
+    log_fail "${suite}: docker-engine failed to reconfigure deb822 sources when native arch excluded"
+  fi
+
+  # 5.9 docker-engine.sh: Architectures-Remove: amd64 は再設定し、Architectures-Add: arm64 は受理すること
+  log_test "${suite}: docker-engine handles Architectures-Remove and Architectures-Add correctly"
+  cat > "${deb822_src}" << EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: noble
+Components: stable
+Architectures-Remove: amd64
+Architectures: amd64
+Signed-By: ${deb822_key}
+EOF
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${deb822_tmp}"
+    export DOCKER_KEYRING="${deb822_key}"
+    export DOCKER_SOURCES="${deb822_src}"
+    export DOCKER_WRAPPER="${deb822_dir}/docker"
+    bash "${REPO_ROOT}/provision/docker-engine.sh" >/dev/null 2>&1
+  )
+
+  local deb822_remove_reconfigured=0
+  if grep -Eq "^Architectures:[[:space:]]+amd64" "${deb822_src}" 2>/dev/null && ! grep -q "Architectures-Remove" "${deb822_src}" 2>/dev/null; then
+    deb822_remove_reconfigured=1
+  fi
+
+  if [ "${deb822_remove_reconfigured}" -eq 1 ]; then
+    log_pass "${suite}: docker-engine handles Architectures-Remove and Architectures-Add correctly"
+  else
+    log_fail "${suite}: docker-engine failed to reconfigure deb822 sources on Architectures-Remove"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -2049,6 +2110,22 @@ test_gh_and_apt_packages() {
   mkdir -p "${fake_bin}"
 
   local installed_flag="${test_dir}/gh_upgraded.flag"
+
+  # スタブ dpkg
+  cat > "${fake_bin}/dpkg" << 'EOF'
+#!/bin/bash
+set -eu
+case "$*" in
+  *--print-architecture*)
+    echo "${STUB_DPKG_ARCH-amd64}"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+  chmod +x "${fake_bin}/dpkg"
 
   # スタブ dpkg-query
   cat > "${fake_bin}/dpkg-query" << EOF
@@ -2459,6 +2536,115 @@ EOF
   else
     log_fail "${suite}: apt-packages accepted commented-out or invalid repo list as valid"
   fi
+
+  # 6.12 github-cli.sh: arch が native_arch を除外している場合はスキップせず再設定すること
+  log_test "${suite}: github-cli reconfigures when arch option excludes native architecture"
+  echo "deb [arch=arm64 signed-by=${gh_key}] https://cli.github.com/packages stable main" > "${gh_repo}"
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${gh_tmp}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    bash "${REPO_ROOT}/provision/github-cli.sh" >/dev/null 2>&1
+  )
+
+  local has_fixed_arch=0
+  if grep -Eq '^[[:space:]]*deb[[:space:]]+\[[^]]*arch=amd64[^]]*\][[:space:]]+https://cli\.github\.com/packages' "${gh_repo}" 2>/dev/null; then
+    has_fixed_arch=1
+  fi
+
+  if [ "${has_fixed_arch}" -eq 1 ]; then
+    log_pass "${suite}: github-cli reconfigures when arch option excludes native architecture"
+  else
+    log_fail "${suite}: github-cli failed to reconfigure when arch option excluded native architecture"
+  fi
+
+  # 6.13 apt-packages.sh: repo_list の arch が native_arch を除外している場合は install gh を呼ぶこと
+  log_test "${suite}: apt-packages detects repo list excluding native arch and triggers install"
+  echo "deb [arch=arm64 signed-by=${gh_key}] https://cli.github.com/packages stable main" > "${gh_repo}"
+  : > "${apt_log}"
+  rm -f "${installed_flag}"
+  (
+    export "${test_env[@]}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    export STUB_GH_MAINTAINER="GitHub <support@github.com>"
+    export STUB_GH_MODE="default"
+    bash "${REPO_ROOT}/provision/apt-packages.sh" >/dev/null 2>&1
+  ) || true
+
+  local arch_mismatch_detected=0
+  if grep -q "install.*gh" "${apt_log}"; then
+    arch_mismatch_detected=1
+  fi
+
+  if [ "${arch_mismatch_detected}" -eq 1 ]; then
+    log_pass "${suite}: apt-packages detects repo list excluding native arch and triggers install"
+  else
+    log_fail "${suite}: apt-packages accepted repo list excluding native arch"
+  fi
+
+  # 6.14 github-cli.sh: 記述順に依存しない arch, arch+=, arch-= セマンティクス
+  log_test "${suite}: github-cli respects order-independent arch operators"
+  echo "deb [arch-=amd64 arch=amd64 signed-by=${gh_key}] https://cli.github.com/packages stable main" > "${gh_repo}"
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${gh_tmp}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    bash "${REPO_ROOT}/provision/github-cli.sh" >/dev/null 2>&1
+  )
+
+  local has_fixed_remove_native=0
+  if grep -Eq '^[[:space:]]*deb[[:space:]]+\[[^]]*arch=amd64[^]]*\][[:space:]]+https://cli\.github\.com/packages' "${gh_repo}" 2>/dev/null && ! grep -q "arch-=amd64" "${gh_repo}" 2>/dev/null; then
+    has_fixed_remove_native=1
+  fi
+
+  # arch+=amd64 arch=arm64 (add takes precedence over replace -> native kept -> accepted)
+  echo "deb [arch+=amd64 arch=arm64 signed-by=${gh_key}] https://cli.github.com/packages stable main" > "${gh_repo}"
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${gh_tmp}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    bash "${REPO_ROOT}/provision/github-cli.sh" >/dev/null 2>&1
+  )
+  local add_native_accepted=0
+  if grep -q "arch+=amd64" "${gh_repo}" 2>/dev/null; then
+    add_native_accepted=1
+  fi
+
+  if [ "${has_fixed_remove_native}" -eq 1 ] && [ "${add_native_accepted}" -eq 1 ]; then
+    log_pass "${suite}: github-cli respects order-independent arch operators"
+  else
+    log_fail "${suite}: github-cli failed order-independent arch operators check"
+  fi
+
+  # 6.15 apt-packages.sh: dpkg --print-architecture 取得失敗（空値）時は受理せず install gh を呼ぶこと
+  log_test "${suite}: apt-packages detects missing native arch query and triggers install"
+  echo "deb [signed-by=${gh_key}] https://cli.github.com/packages stable main" > "${gh_repo}"
+  : > "${apt_log}"
+  rm -f "${installed_flag}"
+  (
+    export "${test_env[@]}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    export STUB_GH_MAINTAINER="GitHub <support@github.com>"
+    export STUB_GH_MODE="default"
+    export STUB_DPKG_ARCH=""
+    bash "${REPO_ROOT}/provision/apt-packages.sh" >/dev/null 2>&1
+  ) || true
+
+  local query_fail_detected=0
+  if grep -q "install.*gh" "${apt_log}"; then
+    query_fail_detected=1
+  fi
+
+  if [ "${query_fail_detected}" -eq 1 ]; then
+    log_pass "${suite}: apt-packages detects missing native arch query and triggers install"
+  else
+    log_fail "${suite}: apt-packages accepted repo when dpkg architecture query was empty"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -2482,6 +2668,22 @@ exit 0
 EOF
     chmod +x "${fake_bin}/${cmd}"
   done
+
+  # スタブ dpkg
+  cat > "${fake_bin}/dpkg" << 'EOF'
+#!/bin/bash
+set -eu
+case "$*" in
+  *--print-architecture*)
+    echo "${STUB_PROBE_DPKG_ARCH-amd64}"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+  chmod +x "${fake_bin}/dpkg"
 
   # スタブ dpkg-query
   cat > "${fake_bin}/dpkg-query" << 'EOF'
@@ -2853,6 +3055,95 @@ EOF
     log_pass "${suite}: probe Git commit signing rejects syntax error in .gitconfig"
   else
     log_fail "${suite}: probe Git commit signing failed to reject syntax error in .gitconfig"
+  fi
+
+  # 7.10 probe basic tools: gh repo の arch が native_arch を除外している場合に拒否すること
+  log_test "${suite}: probe basic tools rejects gh repository excluding native architecture"
+  local p1_arch_repo="${test_dir}/arch_mismatch_repo.list"
+  echo "deb [arch=arm64 signed-by=${test_key}] https://cli.github.com/packages stable main" > "${p1_arch_repo}"
+  local p1_arch_failed=0
+  local p1_arch_stderr="${test_dir}/p1_arch.stderr"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export GH_BIN="${fake_bin}/gh"
+    export GITHUB_CLI_KEYRING="${test_key}"
+    export GITHUB_CLI_REPO_LIST="${p1_arch_repo}"
+    export STUB_PROBE_GH_MAINTAINER="GitHub <support@github.com>"
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p1_script}" 2>"${p1_arch_stderr}"
+  ) || p1_arch_failed=1
+
+  local p1_arch_cause=0
+  if grep -q "gh (official apt repository not configured or invalid)" "${p1_arch_stderr}" 2>/dev/null; then
+    p1_arch_cause=1
+  fi
+
+  if [ "${p1_arch_failed}" -eq 1 ] && [ "${p1_arch_cause}" -eq 1 ]; then
+    log_pass "${suite}: probe basic tools rejects gh repository excluding native architecture"
+  else
+    log_fail "${suite}: probe basic tools accepted gh repository excluding native architecture"
+  fi
+
+  # 7.11 probe basic tools: 記述順に依存しない arch, arch+=, arch-= セマンティクス
+  log_test "${suite}: probe basic tools respects order-independent arch operators"
+  # arch-=amd64 arch=amd64 (rejected)
+  local p1_sub_arch_repo="${test_dir}/sub_arch_repo.list"
+  echo "deb [arch-=amd64 arch=amd64 signed-by=${test_key}] https://cli.github.com/packages stable main" > "${p1_sub_arch_repo}"
+  local p1_sub_arch_failed=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export GH_BIN="${fake_bin}/gh"
+    export GITHUB_CLI_KEYRING="${test_key}"
+    export GITHUB_CLI_REPO_LIST="${p1_sub_arch_repo}"
+    export STUB_PROBE_GH_MAINTAINER="GitHub <support@github.com>"
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p1_script}" >/dev/null 2>&1
+  ) || p1_sub_arch_failed=1
+
+  # arch+=amd64 arch=arm64 (accepted)
+  local p1_add_arch_repo="${test_dir}/add_arch_repo.list"
+  echo "deb [arch+=amd64 arch=arm64 signed-by=${test_key}] https://cli.github.com/packages stable main" > "${p1_add_arch_repo}"
+  local p1_add_arch_success=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export GH_BIN="${fake_bin}/gh"
+    export GITHUB_CLI_KEYRING="${test_key}"
+    export GITHUB_CLI_REPO_LIST="${p1_add_arch_repo}"
+    export STUB_PROBE_GH_MAINTAINER="GitHub <support@github.com>"
+    export PROBE_TIMEOUT=1
+    export PROBE_SLEEP=0
+    bash -c "${p1_script}" >/dev/null 2>&1
+  ) && p1_add_arch_success=1
+
+  if [ "${p1_sub_arch_failed}" -eq 1 ] && [ "${p1_add_arch_success}" -eq 1 ]; then
+    log_pass "${suite}: probe basic tools respects order-independent arch operators"
+  else
+    log_fail "${suite}: probe basic tools failed order-independent arch operators check (sub_failed=${p1_sub_arch_failed}, add_success=${p1_add_arch_success})"
+  fi
+
+  # 7.12 probe basic tools: dpkg --print-architecture 取得失敗（空値）時は拒否すること
+  log_test "${suite}: probe basic tools rejects repository when dpkg query is empty"
+  local p1_empty_arch_repo="${test_dir}/empty_arch_repo.list"
+  echo "deb [signed-by=${test_key}] https://cli.github.com/packages stable main" > "${p1_empty_arch_repo}"
+  local p1_empty_arch_failed=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export GH_BIN="${fake_bin}/gh"
+    export GITHUB_CLI_KEYRING="${test_key}"
+    export GITHUB_CLI_REPO_LIST="${p1_empty_arch_repo}"
+    export STUB_PROBE_GH_MAINTAINER="GitHub <support@github.com>"
+    export STUB_PROBE_DPKG_ARCH=""
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p1_script}" >/dev/null 2>&1
+  ) || p1_empty_arch_failed=1
+
+  if [ "${p1_empty_arch_failed}" -eq 1 ]; then
+    log_pass "${suite}: probe basic tools rejects repository when dpkg query is empty"
+  else
+    log_fail "${suite}: probe basic tools accepted repository when dpkg query was empty"
   fi
 }
 
