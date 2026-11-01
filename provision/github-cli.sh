@@ -28,8 +28,44 @@ repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
 
 is_repo_configured() {
   [ -s "${keyring}" ] && [ -s "${repo_list}" ] && \
-    grep -qF "https://cli.github.com/packages" "${repo_list}" 2>/dev/null && \
-    grep -qF "signed-by=${keyring}" "${repo_list}" 2>/dev/null
+    awk -v key="${keyring}" -v uri="https://cli.github.com/packages" '
+      {
+        line = $0
+        sub(/#.*$/, "", line)
+        if (line !~ /^[ \t]*deb([ \t]|$)/) next
+        key_ok = 0; uri_ok = 0
+        if (match(line, /\[[^]]+\]/)) {
+          opts = substr(line, RSTART + 1, RLENGTH - 2)
+          rest = substr(line, RSTART + RLENGTH)
+          n_opts = split(opts, opt_arr, /[ \t]+/)
+          for (i = 1; i <= n_opts; i++) {
+            if (opt_arr[i] ~ /^signed-by=/) {
+              val = opt_arr[i]
+              sub(/^signed-by=/, "", val)
+              gsub(/^"|"$/, "", val)
+              if (val == key) key_ok = 1
+            }
+          }
+        } else {
+          rest = line
+          sub(/^[ \t]*deb[ \t]+/, "", rest)
+        }
+        sub(/^[ \t]+/, "", rest)
+        n_rest = split(rest, rest_arr, /[ \t]+/)
+        if (n_rest >= 1) {
+          entry_uri = rest_arr[1]
+          sub(/\/+$/, "", entry_uri)
+          target_uri = uri
+          sub(/\/+$/, "", target_uri)
+          if (entry_uri == target_uri) uri_ok = 1
+        }
+        if (key_ok && uri_ok) {
+          found = 1
+          exit 0
+        }
+      }
+      END { exit !found }
+    ' "${repo_list}" 2>/dev/null
 }
 
 # 公式 apt リポジトリと鍵が正常に登録済みであれば終了する

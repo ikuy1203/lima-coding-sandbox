@@ -171,8 +171,42 @@ download_file() {
 
 is_repo_configured() {
   [ -s "${keyring}" ] && [ -s "${sources}" ] && \
-    grep -qF "https://download.docker.com/linux/ubuntu" "${sources}" 2>/dev/null && \
-    grep -qF "Signed-By: ${keyring}" "${sources}" 2>/dev/null
+    awk -v uri="https://download.docker.com/linux/ubuntu" -v key="${keyring}" '
+      BEGIN { RS = ""; found = 0 }
+      {
+        has_uri = 0; has_key = 0; enabled = 1
+        n = split($0, lines, "\n")
+        for (i = 1; i <= n; i++) {
+          line = lines[i]
+          sub(/#.*$/, "", line)
+          sub(/^[ \t]+/, "", line)
+          sub(/[ \t]+$/, "", line)
+          if (line == "") continue
+          if (tolower(line) ~ /^enabled:[ \t]*(no|false|0)([ \t]|$)/) enabled = 0
+          if (line ~ /^URIs:[ \t]+/) {
+            val = line
+            sub(/^URIs:[ \t]+/, "", val)
+            n_uris = split(val, uwords, /[ \t]+/)
+            for (j = 1; j <= n_uris; j++) {
+              u = uwords[j]
+              sub(/\/+$/, "", u)
+              target_u = uri
+              sub(/\/+$/, "", target_u)
+              if (u == target_u) has_uri = 1
+            }
+          }
+          if (line ~ /^Signed-By:[ \t]+/) {
+            val = line
+            sub(/^Signed-By:[ \t]+/, "", val)
+            sub(/^[ \t"]+/, "", val)
+            sub(/[ \t"]+$/, "", val)
+            if (val == key) has_key = 1
+          }
+        }
+        if (has_uri && has_key && enabled) found = 1
+      }
+      END { exit !found }
+    ' "${sources}" 2>/dev/null
 }
 
 # 公式 apt リポジトリと鍵が登録済みであればスキップする

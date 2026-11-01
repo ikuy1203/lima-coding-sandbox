@@ -398,6 +398,105 @@ EOF
   else
     log_fail "${suite}: include.path custom GPG configuration was not preserved"
   fi
+
+  # 1.14 include.path で commit.gpgsign=false が指定された場合、上書きされず署名診断がスキップされること
+  log_test "${suite}: preserve disabled commit signing supplied via include.path"
+  local inc_disable_home="${test_dir}/inc_disable_home"
+  mkdir -p "${inc_disable_home}"
+  printf '[commit]\n\tgpgsign = false\n' > "${inc_disable_home}/disabled.gitconfig"
+  HOME="${inc_disable_home}" XDG_CONFIG_HOME="${inc_disable_home}/.config" GIT_CONFIG_GLOBAL="${inc_disable_home}/.gitconfig" git config --global include.path "${inc_disable_home}/disabled.gitconfig"
+
+  local inc_disable_success=0
+  (
+    export HOME="${inc_disable_home}"
+    export XDG_CONFIG_HOME="${inc_disable_home}/.config"
+    export GIT_CONFIG_GLOBAL="${inc_disable_home}/.gitconfig"
+    bash "${REPO_ROOT}/provision/git-config.sh" >/dev/null 2>&1
+  ) && inc_disable_success=1
+
+  local inc_actual_sign
+  inc_actual_sign=$(HOME="${inc_disable_home}" XDG_CONFIG_HOME="${inc_disable_home}/.config" GIT_CONFIG_GLOBAL="${inc_disable_home}/.gitconfig" git config --includes --global --get commit.gpgsign 2>/dev/null || true)
+
+  if [ "${inc_disable_success}" -eq 1 ] && [ "${inc_actual_sign}" = "false" ]; then
+    log_pass "${suite}: preserve disabled commit signing supplied via include.path"
+  else
+    log_fail "${suite}: disabled commit signing in include.path was overwritten or failed (success=${inc_disable_success}, actual=${inc_actual_sign})"
+  fi
+
+  # 1.15 include.path で user.email が指定された場合、allowed_signers に反映されグローバル署名検証に成功すること
+  log_test "${suite}: configure allowed_signers and verify when identity is from include.path"
+  local inc_ident_home="${test_dir}/inc_ident_home"
+  mkdir -p "${inc_ident_home}"
+  printf '[user]\n\tname = Inc Identity\n\temail = inc_ident@example.com\n' > "${inc_ident_home}/identity.gitconfig"
+  HOME="${inc_ident_home}" XDG_CONFIG_HOME="${inc_ident_home}/.config" GIT_CONFIG_GLOBAL="${inc_ident_home}/.gitconfig" git config --global include.path "${inc_ident_home}/identity.gitconfig"
+
+  local inc_ident_success=0
+  (
+    export HOME="${inc_ident_home}"
+    export XDG_CONFIG_HOME="${inc_ident_home}/.config"
+    export GIT_CONFIG_GLOBAL="${inc_ident_home}/.gitconfig"
+    bash "${REPO_ROOT}/provision/git-config.sh" >/dev/null 2>&1
+  ) && inc_ident_success=1
+
+  local allowed_signers_file="${inc_ident_home}/.config/git/allowed_signers"
+  local has_inc_signer=0
+  if [ -s "${allowed_signers_file}" ] && grep -q "inc_ident@example.com" "${allowed_signers_file}"; then
+    has_inc_signer=1
+  fi
+
+  if [ "${inc_ident_success}" -eq 1 ] && [ "${has_inc_signer}" -eq 1 ]; then
+    log_pass "${suite}: configure allowed_signers and verify when identity is from include.path"
+  else
+    log_fail "${suite}: failed to configure allowed_signers from include.path identity (success=${inc_ident_success}, signer=${has_inc_signer})"
+  fi
+
+  # 1.16 PARAM_gitUserName のみ指定され PARAM_gitUserEmail が空の場合、設定エラーにならず診断メッセージを出して正常終了すること
+  log_test "${suite}: succeed with notice when only gitUserName is supplied in param"
+  local single_param_home="${test_dir}/single_param_home"
+  local single_param_stderr="${test_dir}/single_param.stderr"
+  mkdir -p "${single_param_home}"
+
+  local single_param_success=0
+  (
+    export HOME="${single_param_home}"
+    export XDG_CONFIG_HOME="${single_param_home}/.config"
+    export GIT_CONFIG_GLOBAL="${single_param_home}/.gitconfig"
+    export PARAM_gitUserName="Single User"
+    export PARAM_gitUserEmail=""
+    bash "${REPO_ROOT}/provision/git-config.sh" >/dev/null 2>"${single_param_stderr}"
+  ) && single_param_success=1
+
+  local has_email_prompt=0
+  if grep -q 'git config --global user.email "<your.email@example.com>"' "${single_param_stderr}" 2>/dev/null; then
+    has_email_prompt=1
+  fi
+
+  if [ "${single_param_success}" -eq 1 ] && [ "${has_email_prompt}" -eq 1 ]; then
+    log_pass "${suite}: succeed with notice when only gitUserName is supplied in param"
+  else
+    log_fail "${suite}: failed when only gitUserName was supplied (success=${single_param_success}, prompt=${has_email_prompt})"
+  fi
+
+  # 1.17 パスフレーズ付き鍵で .pub ファイルが欠落している場合でも、エラーで落ちずにスキップ・正常終了すること
+  log_test "${suite}: handle passphrase-protected key gracefully with missing public key file"
+  local pass_nopub_home="${test_dir}/pass_nopub_home"
+  mkdir -p "${pass_nopub_home}/.ssh"
+  ssh-keygen -t ed25519 -N 'secret-passphrase' -f "${pass_nopub_home}/.ssh/id_ed25519_signing" -C "pass-nopub-key" >/dev/null 2>&1
+  rm -f "${pass_nopub_home}/.ssh/id_ed25519_signing.pub"
+
+  local pass_nopub_success=0
+  (
+    export HOME="${pass_nopub_home}"
+    export XDG_CONFIG_HOME="${pass_nopub_home}/.config"
+    export GIT_CONFIG_GLOBAL="${pass_nopub_home}/.gitconfig"
+    bash "${REPO_ROOT}/provision/git-config.sh" </dev/null >/dev/null 2>&1
+  ) && pass_nopub_success=1
+
+  if [ "${pass_nopub_success}" -eq 1 ]; then
+    log_pass "${suite}: handle passphrase-protected key gracefully with missing public key file"
+  else
+    log_fail "${suite}: passphrase-protected key with missing .pub caused failure"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -1163,6 +1262,28 @@ EOF
   else
     log_fail "${suite}: existing binary was not restored when installer failed"
   fi
+
+  # 3.15 dangling symlink の再インストール時、インストーラ実行失敗で元の dangling symlink が復元されること
+  log_test "${suite}: restore existing dangling symlink from backup when installer fails"
+  local link_home="${test_dir}/link_home"
+  local link_tmp="${test_dir}/link_tmp"
+  mkdir -p "${link_home}/.local/bin" "${link_tmp}"
+  ln -s "/nonexistent/target/path" "${link_home}/.local/bin/herdr"
+
+  local link_failed=0
+  (
+    export PATH="${fake_fail_inst_bin}:${PATH}"
+    export HOME="${link_home}"
+    export TMPDIR="${link_tmp}"
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  ) || link_failed=1
+
+  if [ "${link_failed}" -eq 1 ] && [ -L "${link_home}/.local/bin/herdr" ] && \
+     [ "$(readlink "${link_home}/.local/bin/herdr")" = "/nonexistent/target/path" ]; then
+    log_pass "${suite}: restore existing dangling symlink from backup when installer fails"
+  else
+    log_fail "${suite}: dangling symlink was not restored when installer failed"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -1700,6 +1821,97 @@ EOF
   else
     log_fail "${suite}: did not fail as expected when codename undetermined (failed: ${no_os_failed}, msg: ${has_codename_err}, tmp: ${tmp_leftover_no_os})"
   fi
+
+  # 5.6 docker-engine.sh: docker.sources が Enabled: no または Signed-By 参照先不一致の場合、スキップせず再作成すること
+  log_test "${suite}: docker-engine reconfigures when deb822 stanza is disabled or misconfigured"
+  local deb822_dir="${test_dir}/deb822_reconfig"
+  local deb822_tmp="${test_dir}/deb822_tmp"
+  mkdir -p "${deb822_dir}" "${deb822_tmp}"
+
+  local deb822_key="${deb822_dir}/docker.asc"
+  local deb822_src="${deb822_dir}/docker.sources"
+  echo "valid-key-data" > "${deb822_key}"
+  cat > "${deb822_src}" << EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: noble
+Components: stable
+Signed-By: ${deb822_key}
+Enabled: no
+EOF
+
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${deb822_tmp}"
+    export DOCKER_KEYRING="${deb822_key}"
+    export DOCKER_SOURCES="${deb822_src}"
+    export DOCKER_WRAPPER="${deb822_dir}/docker"
+    bash "${REPO_ROOT}/provision/docker-engine.sh" >/dev/null 2>&1
+  )
+
+  local deb822_has_active_stanza=0
+  if awk -v uri="https://download.docker.com/linux/ubuntu" -v key="${deb822_key}" '
+    BEGIN { RS = ""; found = 0 }
+    {
+      has_uri = 0; has_key = 0; enabled = 1
+      n = split($0, lines, "\n")
+      for (i = 1; i <= n; i++) {
+        line = lines[i]
+        sub(/#.*$/, "", line)
+        sub(/^[ \t]+/, "", line)
+        sub(/[ \t]+$/, "", line)
+        if (line == "") continue
+        if (tolower(line) ~ /^enabled:[ \t]*(no|false|0)/) enabled = 0
+        if (line ~ /^URIs:[ \t]+/) {
+          val = line; sub(/^URIs:[ \t]+/, "", val)
+          n_uris = split(val, uwords, /[ \t]+/)
+          for (j = 1; j <= n_uris; j++) {
+            u = uwords[j]; sub(/\/+$/, "", u)
+            target_u = uri; sub(/\/+$/, "", target_u)
+            if (u == target_u) has_uri = 1
+          }
+        }
+        if (line ~ /^Signed-By:[ \t]+/) {
+          val = line; sub(/^Signed-By:[ \t]+/, "", val)
+          sub(/^[ \t"]+/, "", val)
+          sub(/[ \t"]+$/, "", val)
+          if (val == key) has_key = 1
+        }
+      }
+      if (has_uri && has_key && enabled) found = 1
+    }
+    END { exit !found }
+  ' "${deb822_src}" 2>/dev/null; then
+    deb822_has_active_stanza=1
+  fi
+
+  # Signed-By が .old を指している場合もテスト
+  cat > "${deb822_src}" << EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: noble
+Components: stable
+Signed-By: ${deb822_key}.old
+EOF
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${deb822_tmp}"
+    export DOCKER_KEYRING="${deb822_key}"
+    export DOCKER_SOURCES="${deb822_src}"
+    export DOCKER_WRAPPER="${deb822_dir}/docker"
+    bash "${REPO_ROOT}/provision/docker-engine.sh" >/dev/null 2>&1
+  )
+
+  local deb822_fixed_old_key=0
+  if grep -q "Signed-By: ${deb822_key}$" "${deb822_src}" 2>/dev/null; then
+    deb822_fixed_old_key=1
+  fi
+
+  if [ "${deb822_has_active_stanza}" -eq 1 ] && [ "${deb822_fixed_old_key}" -eq 1 ]; then
+    log_pass "${suite}: docker-engine reconfigures when deb822 stanza is disabled or misconfigured"
+  else
+    log_fail "${suite}: docker-engine failed to reconfigure disabled or misconfigured deb822 sources"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -1800,8 +2012,16 @@ esac
 EOF
   chmod +x "${fake_bin}/gh"
 
+  # スタブ ln（ホストの /usr/local/bin/fd 等への書き込みを防止）
+  cat > "${fake_bin}/ln" << 'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "${fake_bin}/ln"
+
   local test_env=(
     "PATH=${fake_bin}:${PATH}"
+    "GH_BIN=${fake_bin}/gh"
     "CLI_VERIFY_TIMEOUT=1"
   )
 
@@ -1882,6 +2102,7 @@ EOF
   # 6.3 apt-packages.sh: 公式版 gh が正常に導入されている場合、再実行時は apt-get update/install をスキップする
   log_test "${suite}: apt-packages skips execution when official gh is installed and working"
   : > "${apt_log}"
+  rm -f "${installed_flag}"
   (
     export "${test_env[@]}"
     export GITHUB_CLI_KEYRING="${gh_key}"
@@ -1903,6 +2124,7 @@ EOF
   # 6.4 apt-packages.sh: gh --version が失敗する場合、all_installed が false となる
   log_test "${suite}: apt-packages detects broken gh binary via --version"
   : > "${apt_log}"
+  rm -f "${installed_flag}"
   (
     export "${test_env[@]}"
     export GITHUB_CLI_KEYRING="${gh_key}"
@@ -1921,6 +2143,151 @@ EOF
     log_pass "${suite}: apt-packages detects broken gh binary via --version"
   else
     log_fail "${suite}: broken gh binary was not detected or reinstalled"
+  fi
+
+  # 6.5 github-cli.sh: コメントアウトされた deb 行のみの場合はスキップせず再設定すること
+  log_test "${suite}: github-cli reconfigures when deb line is commented out"
+  echo "# deb [signed-by=${gh_key}] https://cli.github.com/packages stable main" > "${gh_repo}"
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${gh_tmp}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    bash "${REPO_ROOT}/provision/github-cli.sh" >/dev/null 2>&1
+  )
+
+  local has_uncommented_deb=0
+  if grep -Eq '^[[:space:]]*deb[[:space:]]+.*https://cli\.github\.com/packages' "${gh_repo}" 2>/dev/null; then
+    has_uncommented_deb=1
+  fi
+
+  if [ "${has_uncommented_deb}" -eq 1 ]; then
+    log_pass "${suite}: github-cli reconfigures when deb line is commented out"
+  else
+    log_fail "${suite}: github-cli skipped reconfigure on commented-out repo line"
+  fi
+
+  # 6.6 apt-packages.sh: GitHub 以外のサードパーティ Maintainer が存在する場合に公式版インストールを実行する
+  log_test "${suite}: apt-packages rejects non-GitHub third-party maintainer"
+  : > "${apt_log}"
+  rm -f "${installed_flag}"
+  (
+    export "${test_env[@]}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    export STUB_GH_MAINTAINER="ThirdParty Packager <packager@example.com>"
+    bash "${REPO_ROOT}/provision/apt-packages.sh" >/dev/null 2>&1
+  ) || true
+
+  local thirdparty_install_called=0
+  if grep -q "install.*gh" "${apt_log}"; then
+    thirdparty_install_called=1
+  fi
+
+  if [ "${thirdparty_install_called}" -eq 1 ]; then
+    log_pass "${suite}: apt-packages rejects non-GitHub third-party maintainer"
+  else
+    log_fail "${suite}: third-party maintainer was accepted as official"
+  fi
+
+  # 6.7 apt-packages.sh: PATH 上の別バイナリではなく管理対象バイナリ（GH_BIN）を検証すること
+  log_test "${suite}: apt-packages verifies managed binary rather than shadowing command on PATH"
+  local shadow_bin="${test_dir}/shadow_bin"
+  mkdir -p "${shadow_bin}"
+  # shadow_bin の gh は常に成功
+  cat > "${shadow_bin}/gh" << 'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "${shadow_bin}/gh"
+
+  : > "${apt_log}"
+  rm -f "${installed_flag}"
+  (
+    export "${test_env[@]}"
+    export PATH="${shadow_bin}:${PATH}"
+    # managed binary である GH_BIN は fail モード
+    export STUB_GH_MODE="fail"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    export STUB_GH_MAINTAINER="GitHub <support@github.com>"
+    bash "${REPO_ROOT}/provision/apt-packages.sh" >/dev/null 2>&1
+  ) || true
+
+  local managed_check_called=0
+  if grep -q "install.*gh" "${apt_log}"; then
+    managed_check_called=1
+  fi
+
+  if [ "${managed_check_called}" -eq 1 ]; then
+    log_pass "${suite}: apt-packages verifies managed binary rather than shadowing command on PATH"
+  else
+    log_fail "${suite}: apt-packages used shadowing command on PATH instead of managed binary"
+  fi
+
+  # 6.8 github-cli.sh: signed-by に .old が付いている場合や公式 URI がコメントのみにある場合は再設定すること
+  log_test "${suite}: github-cli reconfigures when signed-by has .old suffix or URI is in comment"
+  echo "deb [signed-by=${gh_key}.old] https://cli.github.com/packages stable main" > "${gh_repo}"
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${gh_tmp}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    bash "${REPO_ROOT}/provision/github-cli.sh" >/dev/null 2>&1
+  )
+
+  local has_fixed_key=0
+  if grep -qF "signed-by=${gh_key}]" "${gh_repo}" 2>/dev/null; then
+    has_fixed_key=1
+  fi
+
+  echo "deb [signed-by=${gh_key}] https://other.com/packages stable main # https://cli.github.com/packages" > "${gh_repo}"
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${gh_tmp}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    bash "${REPO_ROOT}/provision/github-cli.sh" >/dev/null 2>&1
+  )
+
+  local has_fixed_comment_uri=0
+  if grep -Eq '^[[:space:]]*deb[[:space:]]+\[[^]]*\][[:space:]]+https://cli\.github\.com/packages[[:space:]]+stable' "${gh_repo}" 2>/dev/null; then
+    has_fixed_comment_uri=1
+  fi
+
+  if [ "${has_fixed_key}" -eq 1 ] && [ "${has_fixed_comment_uri}" -eq 1 ]; then
+    log_pass "${suite}: github-cli reconfigures when signed-by has .old suffix or URI is in comment"
+  else
+    log_fail "${suite}: github-cli failed to reconfigure on .old key or comment URI (key=${has_fixed_key}, uri=${has_fixed_comment_uri})"
+  fi
+
+  # 6.9 apt-packages.sh: 管理対象バイナリ欠落時、PATH 上の別 gh にフォールバックせず修復対象とすること
+  log_test "${suite}: apt-packages does not fall back to PATH command when managed gh is missing"
+  local missing_gh="${test_dir}/missing_bin/gh"
+  : > "${apt_log}"
+  rm -f "${installed_flag}"
+  (
+    export "${test_env[@]}"
+    # PATH には動く gh がある環境
+    export PATH="${shadow_bin}:${PATH}"
+    # 管理対象バイナリは存在しないパスを指定（ホスト環境に /usr/bin/gh があっても隔離される）
+    export GH_BIN="${missing_gh}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    export STUB_GH_MAINTAINER="GitHub <support@github.com>"
+    bash "${REPO_ROOT}/provision/apt-packages.sh" >/dev/null 2>&1
+  ) || true
+
+  local fallback_prevented=0
+  # 管理対象バイナリが存在しないため、PATH の gh に騙されず apt-get install gh が呼ばれること
+  if grep -q "install.*gh" "${apt_log}"; then
+    fallback_prevented=1
+  fi
+
+  if [ "${fallback_prevented}" -eq 1 ]; then
+    log_pass "${suite}: apt-packages does not fall back to PATH command when managed gh is missing"
+  else
+    log_fail "${suite}: apt-packages fell back to rogue PATH command instead of managing gh"
   fi
 }
 
@@ -1951,7 +2318,13 @@ EOF
 #!/bin/bash
 set -eu
 case "$*" in
+  *db:Status-Status*gh*)
+    echo "${STUB_PROBE_GH_STATUS:-installed}"
+    ;;
   *Maintainer*gh*)
+    if [ "${STUB_PROBE_GH_QUERY_FAIL:-0}" = "1" ]; then
+      exit 1
+    fi
     echo "${STUB_PROBE_GH_MAINTAINER:-GitHub <support@github.com>}"
     ;;
   *)
@@ -2006,6 +2379,7 @@ EOF
   local p1_success=0
   (
     export PATH="${fake_bin}:${PATH}"
+    export GH_BIN="${fake_bin}/gh"
     export GITHUB_CLI_KEYRING="${test_key}"
     export GITHUB_CLI_REPO_LIST="${test_repo}"
     export STUB_PROBE_GH_MAINTAINER="GitHub <support@github.com>"
@@ -2018,6 +2392,7 @@ EOF
   local p1_ubuntu_stderr="${test_dir}/p1_ubuntu.stderr"
   (
     export PATH="${fake_bin}:${PATH}"
+    export GH_BIN="${fake_bin}/gh"
     export GITHUB_CLI_KEYRING="${test_key}"
     export GITHUB_CLI_REPO_LIST="${test_repo}"
     export STUB_PROBE_GH_MAINTAINER="Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>"
@@ -2147,6 +2522,89 @@ EOF
     log_pass "${suite}: probe Git commit signing verifies key pair and reports cause"
   else
     log_fail "${suite}: probe Git commit signing verification failed (success=${p7_success}, mismatch_fail=${p7_mismatch_failed}, cause=${has_mismatch_cause}, no_success=${p7_gpgsign_no_success})"
+  fi
+
+  # 7.4 probe basic tools: dpkg-query メタデータ取得失敗または未インストールの場合に拒否し理由を出力すること
+  log_test "${suite}: probe basic tools rejects gh on failed metadata query"
+  local p1_dpkg_fail_stderr="${test_dir}/p1_dpkg_fail.stderr"
+  local p1_dpkg_failed=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export GH_BIN="${fake_bin}/gh"
+    export GITHUB_CLI_KEYRING="${test_key}"
+    export GITHUB_CLI_REPO_LIST="${test_repo}"
+    export STUB_PROBE_GH_QUERY_FAIL=1
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p1_script}" 2>"${p1_dpkg_fail_stderr}"
+  ) || p1_dpkg_failed=1
+
+  local has_query_fail_cause=0
+  if grep -q "unable to query package maintainer metadata" "${p1_dpkg_fail_stderr}" 2>/dev/null; then
+    has_query_fail_cause=1
+  fi
+
+  if [ "${p1_dpkg_failed}" -eq 1 ] && [ "${has_query_fail_cause}" -eq 1 ]; then
+    log_pass "${suite}: probe basic tools rejects gh on failed metadata query"
+  else
+    log_fail "${suite}: probe[1] did not report failure when dpkg-query failed"
+  fi
+
+  # 7.5 probe Git commit signing: パスフレーズ付き鍵で .pub 不在時でもスキップ・通過すること
+  log_test "${suite}: probe Git commit signing skips passphrase-protected key with missing .pub"
+  local probe_pass_home="${test_dir}/probe_pass_home"
+  mkdir -p "${probe_pass_home}/.ssh"
+  ssh-keygen -t ed25519 -N 'secret' -f "${probe_pass_home}/.ssh/id_ed25519_signing" -C "probe-pass-key" >/dev/null 2>&1
+  rm -f "${probe_pass_home}/.ssh/id_ed25519_signing.pub"
+  HOME="${probe_pass_home}" XDG_CONFIG_HOME="${probe_pass_home}/.config" GIT_CONFIG_GLOBAL="${probe_pass_home}/.gitconfig" git config --global gpg.format ssh
+  HOME="${probe_pass_home}" XDG_CONFIG_HOME="${probe_pass_home}/.config" GIT_CONFIG_GLOBAL="${probe_pass_home}/.gitconfig" git config --global user.signingkey "${probe_pass_home}/.ssh/id_ed25519_signing"
+  HOME="${probe_pass_home}" XDG_CONFIG_HOME="${probe_pass_home}/.config" GIT_CONFIG_GLOBAL="${probe_pass_home}/.gitconfig" git config --global commit.gpgsign true
+
+  local p7_pass_success=0
+  (
+    export HOME="${probe_pass_home}"
+    export XDG_CONFIG_HOME="${probe_pass_home}/.config"
+    export GIT_CONFIG_GLOBAL="${probe_pass_home}/.gitconfig"
+    export GIT_CONFIG_NOSYSTEM=1
+    export GIT_CONFIG_SYSTEM=/dev/null
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p7_script}" >/dev/null 2>&1
+  ) && p7_pass_success=1
+
+  if [ "${p7_pass_success}" -eq 1 ]; then
+    log_pass "${suite}: probe Git commit signing skips passphrase-protected key with missing .pub"
+  else
+    log_fail "${suite}: probe Git commit signing failed on passphrase-protected key without .pub"
+  fi
+
+  # 7.6 probe basic tools: 管理対象バイナリ欠落時、PATH 上の別 gh にフォールバックせず失敗すること
+  log_test "${suite}: probe basic tools does not fall back to PATH command when managed gh is missing"
+  local missing_gh="${test_dir}/missing_bin/gh"
+  local p1_nofallback_stderr="${test_dir}/p1_nofallback.stderr"
+  local p1_nofallback_failed=0
+  (
+    # PATH にはスタブ gh がある環境
+    export PATH="${fake_bin}:${PATH}"
+    # 管理対象バイナリは存在しないパスを指定（ホスト環境に /usr/bin/gh があっても隔離される）
+    export GH_BIN="${missing_gh}"
+    export GITHUB_CLI_KEYRING="${test_key}"
+    export GITHUB_CLI_REPO_LIST="${test_repo}"
+    export STUB_PROBE_GH_MAINTAINER="GitHub <support@github.com>"
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p1_script}" 2>"${p1_nofallback_stderr}"
+  ) || p1_nofallback_failed=1
+
+  local has_nofallback_cause=0
+  if grep -q "gh (${missing_gh} not found or not executable)" "${p1_nofallback_stderr}" 2>/dev/null; then
+    has_nofallback_cause=1
+  fi
+
+  if [ "${p1_nofallback_failed}" -eq 1 ] && [ "${has_nofallback_cause}" -eq 1 ]; then
+    log_pass "${suite}: probe basic tools does not fall back to PATH command when managed gh is missing"
+  else
+    log_fail "${suite}: probe[1] fell back to PATH command or did not report missing gh"
   fi
 }
 

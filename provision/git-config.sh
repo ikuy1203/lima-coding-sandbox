@@ -15,7 +15,7 @@ key="${HOME}/.ssh/id_ed25519_signing"
 
 # 値が設定されていなければ設定する
 set_if_unset() {
-  if ! git config --global --get "$1" >/dev/null; then
+  if ! git config --includes --global --get "$1" >/dev/null; then
     git config --global "$1" "$2"
   fi
 }
@@ -36,8 +36,18 @@ if [ ! -s "${key}" ]; then
   rm -f "${key}" "${key}.pub"
   ssh-keygen -t ed25519 -N '' -C "git-signing ${USER}@$(hostname)" -f "${key}"
 elif [ ! -s "${key}.pub" ]; then
-  ssh-keygen -y -P '' -f "${key}" > "${key}.pub"
-  chmod 0644 "${key}.pub"
+  derived_out=$(ssh-keygen -y -P '' -f "${key}" 2>&1) || true
+  case "${derived_out}" in
+    *[Pp]assphrase*|*[Ii]ncorrect*)
+      echo "notice: Git signing key is protected by passphrase; skipping public key derivation"
+      ;;
+    *)
+      if [ -n "${derived_out}" ] && echo "${derived_out}" | ssh-keygen -l -f - >/dev/null 2>&1; then
+        printf '%s\n' "${derived_out}" > "${key}.pub"
+        chmod 0644 "${key}.pub"
+      fi
+      ;;
+  esac
 fi
 
 # SSH 鍵でコミットとタグに署名する
@@ -54,14 +64,14 @@ fi
 # git log --show-signature などで、VM の中でも署名を検証できるようにする。
 # このスクリプトが作成した鍵（id_ed25519_signing）を署名に使う場合のみ自動登録する。
 # （利用者が独自の署名鍵や設定に変更した場合は、検証ファイルの管理も利用者に任せる）
-configured_email=$(git config --global --get user.email || true)
-gpg_format=$(git config --global --get gpg.format || echo "openpgp")
-signing_key=$(git config --global --get user.signingkey || true)
+configured_email=$(git config --includes --global --get user.email 2>/dev/null || true)
+gpg_format=$(git config --includes --global --get gpg.format 2>/dev/null || echo "openpgp")
+signing_key=$(git config --includes --global --get user.signingkey 2>/dev/null || true)
 signing_key="${signing_key/#\~/$HOME}"
 
 if [ -n "${configured_email}" ] && [ "${gpg_format}" = "ssh" ] && [ "${signing_key}" = "${key}" ] && [ -s "${key}.pub" ]; then
   # allowedSignersFile のパスを取得する（設定されていればそれを使い、未設定なら既定値を使う）
-  configured_signers=$(git config --global --get gpg.ssh.allowedSignersFile || true)
+  configured_signers=$(git config --includes --global --get gpg.ssh.allowedSignersFile 2>/dev/null || true)
   if [ -n "${configured_signers}" ]; then
     allowed_signers="${configured_signers/#\~/$HOME}"
   else
@@ -107,10 +117,6 @@ diagnose_git_signing() {
     echo >&2 "error: signing key ${key} is missing or empty"
     return 1
   fi
-  if [ ! -s "${key}.pub" ]; then
-    echo >&2 "error: signing public key ${key}.pub is missing or empty"
-    return 1
-  fi
 
   local derived_pub actual_pub
   if ! derived_pub=$(ssh-keygen -y -P '' -f "${key}" 2>&1); then
@@ -125,6 +131,12 @@ diagnose_git_signing() {
         ;;
     esac
   fi
+
+  if [ ! -s "${key}.pub" ]; then
+    echo >&2 "error: signing public key ${key}.pub is missing or empty"
+    return 1
+  fi
+
   actual_pub=$(awk '{print $1, $2}' "${key}.pub")
   derived_pub=$(echo "${derived_pub}" | awk '{print $1, $2}')
   if [ -z "${derived_pub}" ] || [ "${derived_pub}" != "${actual_pub}" ]; then
@@ -158,7 +170,8 @@ run_diag_test() {
 
   if [ -z "${configured_name}" ] || [ -z "${configured_email}" ]; then
     # PARAM_* が指定されていたのに空なら設定エラー
-    if [ -n "${PARAM_gitUserName:-}" ] || [ -n "${PARAM_gitUserEmail:-}" ]; then
+    if { [ -n "${PARAM_gitUserName:-}" ] && [ -z "${configured_name}" ]; } || \
+       { [ -n "${PARAM_gitUserEmail:-}" ] && [ -z "${configured_email}" ]; }; then
       echo >&2 "error: Git user identity was specified in param but not configured properly"
       return 1
     fi

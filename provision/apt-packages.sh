@@ -62,6 +62,7 @@ is_official_gh_installed() {
   local repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
   local keyring="${GITHUB_CLI_KEYRING:-/etc/apt/keyrings/githubcli-archive-keyring.gpg}"
   local verify_timeout="${CLI_VERIFY_TIMEOUT:-10}"
+  local gh_bin="${GH_BIN:-/usr/bin/gh}"
 
   # 1. gh パッケージがインストール済みか
   # shellcheck disable=SC2016
@@ -70,15 +71,18 @@ is_official_gh_installed() {
   # 2. 公式 apt リポジトリ設定が存在するか
   [ -s "${repo_list}" ] && [ -s "${keyring}" ] || return 1
 
-  # 3. Maintainer が Ubuntu / Debian 由来でないか（公式パッケージは GitHub 由来）
+  # 3. Maintainer が公式 GitHub 由来か（positive validation: メタデータ取得失敗や非公式は拒否）
   local maintainer
-  maintainer=$(dpkg-query -W -f='${Maintainer}' gh 2>/dev/null || true)
+  maintainer=$(dpkg-query -W -f='${Maintainer}' gh 2>/dev/null) || return 1
+  [ -n "${maintainer}" ] || return 1
   case "${maintainer}" in
-    *"Ubuntu Developers"*|*"Debian "*Developers*) return 1 ;;
+    *"GitHub"*) ;;
+    *) return 1 ;;
   esac
 
-  # 4. 実動作確認 (timeout 付き --version)
-  timeout -k 2 "${verify_timeout}" gh --version >/dev/null 2>&1 || return 1
+  # 4. 管理対象バイナリの実動作確認
+  [ -x "${gh_bin}" ] || return 1
+  timeout -k 2 "${verify_timeout}" "${gh_bin}" --version >/dev/null 2>&1 || return 1
 
   return 0
 }

@@ -144,21 +144,19 @@ probes:
     # provision/apt-packages.sh で入れるパッケージ（gh を含む）の主なコマンド
     cmds=(git curl wget jq less ssh gcc make rg fd fdfind unzip zip tree shellcheck nft pip3 pipx node npm)
     check_gh() {
-      local gh_cmd
-      if [ -x /usr/bin/gh ]; then
-        gh_cmd="/usr/bin/gh"
-      elif command -v gh >/dev/null; then
-        gh_cmd="$(command -v gh)"
-      else
-        return 1
-      fi
+      local gh_cmd="${GH_BIN:-/usr/bin/gh}"
+      [ -x "${gh_cmd}" ] || return 1
       local repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
       local keyring="${GITHUB_CLI_KEYRING:-/etc/apt/keyrings/githubcli-archive-keyring.gpg}"
       [ -s "${repo_list}" ] && [ -s "${keyring}" ] || return 1
+      # shellcheck disable=SC2016
+      [ "$(dpkg-query -W -f='${db:Status-Status}' gh 2>/dev/null)" = installed ] || return 1
       local maintainer
-      maintainer=$(dpkg-query -W -f='${Maintainer}' gh 2>/dev/null || true)
+      maintainer=$(dpkg-query -W -f='${Maintainer}' gh 2>/dev/null) || return 1
+      [ -n "${maintainer}" ] || return 1
       case "${maintainer}" in
-        *"Ubuntu Developers"*|*"Debian "*Developers*) return 1 ;;
+        *"GitHub"*) ;;
+        *) return 1 ;;
       esac
       timeout -k 2 5 "${gh_cmd}" --version >/dev/null 2>&1 || return 1
       return 0
@@ -173,32 +171,50 @@ probes:
     gh_status() {
       local repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
       local keyring="${GITHUB_CLI_KEYRING:-/etc/apt/keyrings/githubcli-archive-keyring.gpg}"
-      local gh_cmd
-      if [ -x /usr/bin/gh ]; then
-        gh_cmd="/usr/bin/gh"
-      elif command -v gh >/dev/null; then
-        gh_cmd="$(command -v gh)"
-      else
-        echo "gh (command not found)"
+      local gh_cmd="${GH_BIN:-/usr/bin/gh}"
+      if [ ! -x "${gh_cmd}" ]; then
+        echo "gh (${gh_cmd} not found or not executable)"
         return 0
       fi
 
       if [ ! -s "${repo_list}" ] || [ ! -s "${keyring}" ]; then
         echo "gh (official apt repository not configured)"
-      else
-        local maintainer
-        maintainer=$(dpkg-query -W -f='${Maintainer}' gh 2>/dev/null || true)
-        case "${maintainer}" in
-          *"Ubuntu Developers"*|*"Debian "*Developers*)
-            echo "gh (installed package is from Ubuntu universe instead of official cli.github.com)"
-            ;;
-          *)
-            if ! timeout -k 2 5 "${gh_cmd}" --version >/dev/null 2>&1; then
-              echo "gh ('gh --version' failed or timed out)"
-            fi
-            ;;
-        esac
+        return 0
       fi
+
+      # shellcheck disable=SC2016
+      local pkg_status
+      pkg_status=$(dpkg-query -W -f='${db:Status-Status}' gh 2>/dev/null || true)
+      if [ "${pkg_status}" != "installed" ]; then
+        echo "gh (apt package 'gh' is not installed)"
+        return 0
+      fi
+
+      local maintainer
+      if ! maintainer=$(dpkg-query -W -f='${Maintainer}' gh 2>/dev/null) || [ -z "${maintainer}" ]; then
+        echo "gh (unable to query package maintainer metadata)"
+        return 0
+      fi
+
+      case "${maintainer}" in
+        *"GitHub"*)
+          ;;
+        *"Ubuntu Developers"*|*"Debian "*Developers*)
+          echo "gh (installed package is from Ubuntu universe instead of official cli.github.com)"
+          return 0
+          ;;
+        *)
+          echo "gh (package maintainer '${maintainer}' is not official GitHub)"
+          return 0
+          ;;
+      esac
+
+      if ! timeout -k 2 5 "${gh_cmd}" --version >/dev/null 2>&1; then
+        echo "gh ('gh --version' failed or timed out)"
+        return 0
+      fi
+
+      echo "gh (verification failed)"
     }
     # 全コマンドをまとめて確認し、30 秒以内にそろわなければ、見つからないもの・不整合なものを全件表示して失敗する
     deadline=$((SECONDS + ${PROBE_TIMEOUT:-30}))
@@ -378,10 +394,6 @@ probes:
         signing_failure_reason="private key ${key} is missing or empty"
         return 1
       fi
-      if [ ! -s "${key}.pub" ]; then
-        signing_failure_reason="public key ${key}.pub is missing or empty"
-        return 1
-      fi
 
       local derived_pub actual_pub
       if ! derived_pub=$(ssh-keygen -y -P '' -f "${key}" 2>&1); then
@@ -392,6 +404,11 @@ probes:
             signing_failure_reason="failed to read private key: ${derived_pub}"
             return 1 ;;
         esac
+      fi
+
+      if [ ! -s "${key}.pub" ]; then
+        signing_failure_reason="public key ${key}.pub is missing or empty"
+        return 1
       fi
 
       actual_pub=$(awk '{print $1, $2}' "${key}.pub")

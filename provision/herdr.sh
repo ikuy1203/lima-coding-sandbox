@@ -196,11 +196,11 @@ download_file() {
 installer=$(mktemp)
 tmp_files+=("${installer}")
 download_file https://herdr.dev/install.sh "${installer}"
-if [ "${broken_existing}" = true ] && [ -e "${bin}" ]; then
+if [ "${broken_existing}" = true ] && { [ -e "${bin}" ] || [ -L "${bin}" ]; }; then
   mv -f "${bin}" "${bin}.bak"
 fi
 if ! { sh "${installer}" && verify_cli "herdr" "${bin}"; }; then
-  if [ -e "${bin}.bak" ]; then
+  if [ -e "${bin}.bak" ] || [ -L "${bin}.bak" ]; then
     echo >&2 "warning: reinstallation failed; restoring original binary"
     mv -f "${bin}.bak" "${bin}"
   fi
