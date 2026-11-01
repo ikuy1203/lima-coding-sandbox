@@ -156,6 +156,248 @@ test_git_config() {
   else
     log_fail "${suite}: existing settings overwritten"
   fi
+
+  # 1.5 ユーザ名・メール未指定時の動作: 署名機構が検証され、未設定の診断案内が出力されて成功する
+  log_test "${suite}: unconfigured user identity diagnoses and verifies mechanism"
+  local unset_home="${test_dir}/unset_home"
+  local unset_stderr="${test_dir}/unset.stderr"
+  mkdir -p "${unset_home}"
+  local unset_success=0
+  (
+    export HOME="${unset_home}"
+    export XDG_CONFIG_HOME="${unset_home}/.config"
+    export GIT_CONFIG_GLOBAL="${unset_home}/.gitconfig"
+    export PARAM_gitUserName=""
+    export PARAM_gitUserEmail=""
+    bash "${REPO_ROOT}/provision/git-config.sh" >/dev/null 2>"${unset_stderr}"
+  ) && unset_success=1
+
+  local has_notice=0
+  if grep -q "Git commit signing mechanism is verified, but user identity is not configured yet" "${unset_stderr}"; then
+    has_notice=1
+  fi
+
+  if [ "${unset_success}" -eq 1 ] && [ "${has_notice}" -eq 1 ] && [ -s "${unset_home}/.ssh/id_ed25519_signing" ]; then
+    log_pass "${suite}: unconfigured user identity diagnoses and verifies mechanism"
+  else
+    log_fail "${suite}: unconfigured user identity diagnosis failed (success=${unset_success}, notice=${has_notice})"
+  fi
+
+  # 1.6 秘密鍵と公開鍵の不整合の検出
+  log_test "${suite}: detect mismatch between private and public key"
+  local mismatch_home="${test_dir}/mismatch_home"
+  local mismatch_stderr="${test_dir}/mismatch.stderr"
+  mkdir -p "${mismatch_home}/.ssh"
+  ssh-keygen -t ed25519 -N '' -f "${mismatch_home}/.ssh/id_ed25519_signing" -C "key1" >/dev/null 2>&1
+  ssh-keygen -t ed25519 -N '' -f "${mismatch_home}/.ssh/other" -C "key2" >/dev/null 2>&1
+  cp "${mismatch_home}/.ssh/other.pub" "${mismatch_home}/.ssh/id_ed25519_signing.pub"
+  rm -f "${mismatch_home}/.ssh/other"*
+
+  local mismatch_failed=0
+  (
+    export HOME="${mismatch_home}"
+    export XDG_CONFIG_HOME="${mismatch_home}/.config"
+    export GIT_CONFIG_GLOBAL="${mismatch_home}/.gitconfig"
+    bash "${REPO_ROOT}/provision/git-config.sh" 2>"${mismatch_stderr}"
+  ) || mismatch_failed=1
+
+  local has_mismatch_msg=0
+  if grep -q "does not match private key" "${mismatch_stderr}"; then
+    has_mismatch_msg=1
+  fi
+
+  if [ "${mismatch_failed}" -eq 1 ] && [ "${has_mismatch_msg}" -eq 1 ]; then
+    log_pass "${suite}: detect mismatch between private and public key"
+  else
+    log_fail "${suite}: key mismatch detection failed"
+  fi
+
+  # 1.7 明示的に署名が無効化（commit.gpgsign=false）されている場合は上書きせず診断も通過
+  log_test "${suite}: respect explicitly disabled commit signing"
+  local disabled_home="${test_dir}/disabled_home"
+  mkdir -p "${disabled_home}"
+  HOME="${disabled_home}" XDG_CONFIG_HOME="${disabled_home}/.config" GIT_CONFIG_GLOBAL="${disabled_home}/.gitconfig" git config --global commit.gpgsign false
+
+  local disabled_success=0
+  (
+    export HOME="${disabled_home}"
+    export XDG_CONFIG_HOME="${disabled_home}/.config"
+    export GIT_CONFIG_GLOBAL="${disabled_home}/.gitconfig"
+    bash "${REPO_ROOT}/provision/git-config.sh" >/dev/null 2>&1
+  ) && disabled_success=1
+
+  local actual_sign
+  actual_sign=$(HOME="${disabled_home}" XDG_CONFIG_HOME="${disabled_home}/.config" GIT_CONFIG_GLOBAL="${disabled_home}/.gitconfig" git config --global --get commit.gpgsign || true)
+
+  if [ "${disabled_success}" -eq 1 ] && [ "${actual_sign}" = "false" ]; then
+    log_pass "${suite}: respect explicitly disabled commit signing"
+  else
+    log_fail "${suite}: disabled commit signing was overwritten or failed"
+  fi
+
+  # 1.8 グローバルの core.hooksPath でコミットが拒否される環境でも診断用コミットが妨害されないこと
+  log_test "${suite}: ignore global core.hooksPath during signing diagnosis"
+  local hook_home="${test_dir}/hook_home"
+  local hook_dir="${test_dir}/global_hooks"
+  mkdir -p "${hook_home}" "${hook_dir}"
+  cat > "${hook_dir}/pre-commit" << 'EOF'
+#!/bin/sh
+echo "pre-commit hook triggered and rejected" >&2
+exit 1
+EOF
+  chmod +x "${hook_dir}/pre-commit"
+
+  HOME="${hook_home}" XDG_CONFIG_HOME="${hook_home}/.config" GIT_CONFIG_GLOBAL="${hook_home}/.gitconfig" git config --global core.hooksPath "${hook_dir}"
+  HOME="${hook_home}" XDG_CONFIG_HOME="${hook_home}/.config" GIT_CONFIG_GLOBAL="${hook_home}/.gitconfig" git config --global user.name "Hook User"
+  HOME="${hook_home}" XDG_CONFIG_HOME="${hook_home}/.config" GIT_CONFIG_GLOBAL="${hook_home}/.gitconfig" git config --global user.email "hook@example.com"
+
+  local hook_success=0
+  (
+    export HOME="${hook_home}"
+    export XDG_CONFIG_HOME="${hook_home}/.config"
+    export GIT_CONFIG_GLOBAL="${hook_home}/.gitconfig"
+    bash "${REPO_ROOT}/provision/git-config.sh" >/dev/null 2>&1
+  ) && hook_success=1
+
+  if [ "${hook_success}" -eq 1 ]; then
+    log_pass "${suite}: ignore global core.hooksPath during signing diagnosis"
+  else
+    log_fail "${suite}: global hooks interfered with signing diagnosis"
+  fi
+
+  # 1.9 秘密鍵が 0 バイトの空ファイルの場合に非対話で上書き確認なく再生成・復旧されること
+  log_test "${suite}: recover empty private key non-interactively without overwrite prompt"
+  local empty_home="${test_dir}/empty_home"
+  mkdir -p "${empty_home}/.ssh"
+  touch "${empty_home}/.ssh/id_ed25519_signing"
+
+  local empty_success=0
+  (
+    export HOME="${empty_home}"
+    export XDG_CONFIG_HOME="${empty_home}/.config"
+    export GIT_CONFIG_GLOBAL="${empty_home}/.gitconfig"
+    bash "${REPO_ROOT}/provision/git-config.sh" </dev/null >/dev/null 2>&1
+  ) && empty_success=1
+
+  if [ "${empty_success}" -eq 1 ] && [ -s "${empty_home}/.ssh/id_ed25519_signing" ] && [ -s "${empty_home}/.ssh/id_ed25519_signing.pub" ]; then
+    log_pass "${suite}: recover empty private key non-interactively without overwrite prompt"
+  else
+    log_fail "${suite}: failed to recover 0-byte private key non-interactively"
+  fi
+
+  # 1.10 commit.gpgsign が no / off / 0 / unset の場合に署名診断がスキップされ正常終了すること
+  log_test "${suite}: respect normalized boolean variants of commit.gpgsign (no/off/0/unset)"
+  local gpgsign_home="${test_dir}/gpgsign_home"
+  mkdir -p "${gpgsign_home}"
+  HOME="${gpgsign_home}" XDG_CONFIG_HOME="${gpgsign_home}/.config" GIT_CONFIG_GLOBAL="${gpgsign_home}/.gitconfig" git config --global user.name "GpgSign User"
+  HOME="${gpgsign_home}" XDG_CONFIG_HOME="${gpgsign_home}/.config" GIT_CONFIG_GLOBAL="${gpgsign_home}/.gitconfig" git config --global user.email "gpgsign@example.com"
+
+  # まず初期設定を実行
+  (
+    export HOME="${gpgsign_home}"
+    export XDG_CONFIG_HOME="${gpgsign_home}/.config"
+    export GIT_CONFIG_GLOBAL="${gpgsign_home}/.gitconfig"
+    bash "${REPO_ROOT}/provision/git-config.sh" >/dev/null 2>&1
+  )
+
+  local all_bool_variants_pass=1
+  for val in "no" "off" "0" "false"; do
+    HOME="${gpgsign_home}" XDG_CONFIG_HOME="${gpgsign_home}/.config" GIT_CONFIG_GLOBAL="${gpgsign_home}/.gitconfig" git config --global commit.gpgsign "${val}"
+    if ! (
+      export HOME="${gpgsign_home}"
+      export XDG_CONFIG_HOME="${gpgsign_home}/.config"
+      export GIT_CONFIG_GLOBAL="${gpgsign_home}/.gitconfig"
+      bash "${REPO_ROOT}/provision/git-config.sh" >/dev/null 2>&1
+    ); then
+      all_bool_variants_pass=0
+      break
+    fi
+  done
+
+  # --unset の場合もテスト
+  HOME="${gpgsign_home}" XDG_CONFIG_HOME="${gpgsign_home}/.config" GIT_CONFIG_GLOBAL="${gpgsign_home}/.gitconfig" git config --global --unset commit.gpgsign
+  if ! (
+    export HOME="${gpgsign_home}"
+    export XDG_CONFIG_HOME="${gpgsign_home}/.config"
+    export GIT_CONFIG_GLOBAL="${gpgsign_home}/.gitconfig"
+    bash "${REPO_ROOT}/provision/git-config.sh" >/dev/null 2>&1
+  ); then
+    all_bool_variants_pass=0
+  fi
+
+  if [ "${all_bool_variants_pass}" -eq 1 ]; then
+    log_pass "${suite}: respect normalized boolean variants of commit.gpgsign (no/off/0/unset)"
+  else
+    log_fail "${suite}: failed to handle boolean false or unset commit.gpgsign"
+  fi
+
+  # 1.11 独自設定（user.signingkey が別鍵、または未設定で gpg.format=ssh）が尊重されること
+  log_test "${suite}: preserve custom user.signingkey and custom ssh format without template key"
+  local custom_home="${test_dir}/custom_home"
+  mkdir -p "${custom_home}"
+  HOME="${custom_home}" XDG_CONFIG_HOME="${custom_home}/.config" GIT_CONFIG_GLOBAL="${custom_home}/.gitconfig" git config --global user.name "Custom User"
+  HOME="${custom_home}" XDG_CONFIG_HOME="${custom_home}/.config" GIT_CONFIG_GLOBAL="${custom_home}/.gitconfig" git config --global user.email "custom@example.com"
+  HOME="${custom_home}" XDG_CONFIG_HOME="${custom_home}/.config" GIT_CONFIG_GLOBAL="${custom_home}/.gitconfig" git config --global gpg.format ssh
+  # user.signingkey は未設定（ssh-agent 利用構成などを想定）
+
+  local custom_success=0
+  (
+    export HOME="${custom_home}"
+    export XDG_CONFIG_HOME="${custom_home}/.config"
+    export GIT_CONFIG_GLOBAL="${custom_home}/.gitconfig"
+    bash "${REPO_ROOT}/provision/git-config.sh" >/dev/null 2>&1
+  ) && custom_success=1
+
+  if [ "${custom_success}" -eq 1 ]; then
+    log_pass "${suite}: preserve custom user.signingkey and custom ssh format without template key"
+  else
+    log_fail "${suite}: custom signing configuration was not preserved"
+  fi
+
+  # 1.12 パスフレーズ付き鍵が存在する場合に非対話エラーとならずスキップ・成功すること
+  log_test "${suite}: handle passphrase-protected key gracefully by skipping non-interactive test"
+  local pass_home="${test_dir}/pass_home"
+  mkdir -p "${pass_home}/.ssh"
+  ssh-keygen -t ed25519 -N 'secret-passphrase' -f "${pass_home}/.ssh/id_ed25519_signing" -C "pass-key" >/dev/null 2>&1
+  HOME="${pass_home}" XDG_CONFIG_HOME="${pass_home}/.config" GIT_CONFIG_GLOBAL="${pass_home}/.gitconfig" git config --global user.name "Pass User"
+  HOME="${pass_home}" XDG_CONFIG_HOME="${pass_home}/.config" GIT_CONFIG_GLOBAL="${pass_home}/.gitconfig" git config --global user.email "pass@example.com"
+
+  local pass_success=0
+  (
+    export HOME="${pass_home}"
+    export XDG_CONFIG_HOME="${pass_home}/.config"
+    export GIT_CONFIG_GLOBAL="${pass_home}/.gitconfig"
+    bash "${REPO_ROOT}/provision/git-config.sh" </dev/null >/dev/null 2>&1
+  ) && pass_success=1
+
+  if [ "${pass_success}" -eq 1 ]; then
+    log_pass "${suite}: handle passphrase-protected key gracefully by skipping non-interactive test"
+  else
+    log_fail "${suite}: passphrase-protected key caused failure"
+  fi
+
+  # 1.13 include.path で読み込んだ独自の GPG 設定が尊重されること
+  log_test "${suite}: preserve custom GPG configuration loaded via include.path"
+  local inc_home="${test_dir}/inc_home"
+  mkdir -p "${inc_home}"
+  HOME="${inc_home}" XDG_CONFIG_HOME="${inc_home}/.config" GIT_CONFIG_GLOBAL="${inc_home}/.gitconfig" git config --global user.name "Include User"
+  HOME="${inc_home}" XDG_CONFIG_HOME="${inc_home}/.config" GIT_CONFIG_GLOBAL="${inc_home}/.gitconfig" git config --global user.email "include@example.com"
+  printf '[user]\n\tsigningkey = CUSTOM_GPG_KEY_ID\n[gpg]\n\tformat = openpgp\n' > "${inc_home}/custom.gitconfig"
+  HOME="${inc_home}" XDG_CONFIG_HOME="${inc_home}/.config" GIT_CONFIG_GLOBAL="${inc_home}/.gitconfig" git config --global include.path "${inc_home}/custom.gitconfig"
+
+  local inc_success=0
+  (
+    export HOME="${inc_home}"
+    export XDG_CONFIG_HOME="${inc_home}/.config"
+    export GIT_CONFIG_GLOBAL="${inc_home}/.gitconfig"
+    bash "${REPO_ROOT}/provision/git-config.sh" >/dev/null 2>&1
+  ) && inc_success=1
+
+  if [ "${inc_success}" -eq 1 ]; then
+    log_pass "${suite}: preserve custom GPG configuration loaded via include.path"
+  else
+    log_fail "${suite}: include.path custom GPG configuration was not preserved"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -765,6 +1007,162 @@ EOF
   else
     log_fail "${suite}: drift detected in download_file implementations"
   fi
+
+  # 3.10 実行権限はあるが壊れている（非ゼロ終了）既存バイナリの自動復旧
+  log_test "${suite}: recover from existing broken binary that exits with error"
+  local broken_home="${test_dir}/broken_home"
+  local broken_tmp="${test_dir}/broken_tmp"
+  mkdir -p "${broken_home}/.local/bin" "${broken_tmp}"
+  cat > "${broken_home}/.local/bin/herdr" << 'EOF'
+#!/bin/sh
+exit 1
+EOF
+  chmod +x "${broken_home}/.local/bin/herdr"
+
+  (
+    export "${test_env[@]}"
+    export HOME="${broken_home}"
+    export TMPDIR="${broken_tmp}"
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  )
+
+  local recovered=0
+  if [ -x "${broken_home}/.local/bin/herdr" ] && "${broken_home}/.local/bin/herdr" >/dev/null 2>&1; then
+    recovered=1
+  fi
+
+  if [ "${recovered}" -eq 1 ]; then
+    log_pass "${suite}: recover from existing broken binary that exits with error"
+  else
+    log_fail "${suite}: failed to recover broken binary"
+  fi
+
+  # 3.11 実行時にハングする既存バイナリのタイムアウト検知と再インストール
+  log_test "${suite}: recover from existing hanging binary via verify timeout"
+  local hang_home="${test_dir}/hang_home"
+  local hang_tmp="${test_dir}/hang_tmp"
+  mkdir -p "${hang_home}/.local/bin" "${hang_tmp}"
+  cat > "${hang_home}/.local/bin/copilot" << 'EOF'
+#!/bin/sh
+sleep 10
+EOF
+  chmod +x "${hang_home}/.local/bin/copilot"
+
+  (
+    export "${test_env[@]}"
+    export HOME="${hang_home}"
+    export TMPDIR="${hang_tmp}"
+    export CLI_VERIFY_TIMEOUT=1
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+  )
+
+  local hang_recovered=0
+  if [ -x "${hang_home}/.local/bin/copilot" ] && "${hang_home}/.local/bin/copilot" >/dev/null 2>&1; then
+    hang_recovered=1
+  fi
+
+  if [ "${hang_recovered}" -eq 1 ]; then
+    log_pass "${suite}: recover from existing hanging binary via verify timeout"
+  else
+    log_fail "${suite}: failed to recover hanging binary"
+  fi
+
+  # 3.12 4つのCLIプロビジョニングスクリプト間での verify_cli 関数の共通性検証（ドリフト検査）
+  log_test "${suite}: consistency of verify_cli across all CLI provision scripts"
+  local cli_scripts=(
+    "${REPO_ROOT}/provision/herdr.sh"
+    "${REPO_ROOT}/provision/antigravity-cli.sh"
+    "${REPO_ROOT}/provision/copilot-cli.sh"
+    "${REPO_ROOT}/provision/mise.sh"
+  )
+  local ref_verify
+  ref_verify=$(awk '/^verify_cli\(\)/,/^}$/{print}' "${cli_scripts[0]}")
+  local v_drift_found=0
+  for s in "${cli_scripts[@]}"; do
+    local current_verify
+    current_verify=$(awk '/^verify_cli\(\)/,/^}$/{print}' "${s}")
+    if [ "${ref_verify}" != "${current_verify}" ]; then
+      v_drift_found=1
+      echo >&2 "Drift in verify_cli detected in $(basename "${s}")"
+    fi
+  done
+  if [ "${v_drift_found}" -eq 0 ]; then
+    log_pass "${suite}: consistency of verify_cli across all CLI provision scripts"
+  else
+    log_fail "${suite}: drift detected in verify_cli implementations"
+  fi
+
+  # 3.13 既存のバイナリが破損していて再インストールを試みる際、ダウンロード失敗時に既存バイナリが削除されないこと
+  log_test "${suite}: preserve existing binary when re-download fails"
+  local keep_home="${test_dir}/keep_home"
+  local keep_tmp="${test_dir}/keep_tmp"
+  mkdir -p "${keep_home}/.local/bin" "${keep_tmp}"
+  echo "old broken binary content" > "${keep_home}/.local/bin/herdr"
+  chmod +x "${keep_home}/.local/bin/herdr"
+
+  local keep_failed=0
+  (
+    export "${test_env[@]}"
+    export HOME="${keep_home}"
+    export TMPDIR="${keep_tmp}"
+    export STUB_CURL_MODE="permanent_404"
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  ) || keep_failed=1
+
+  if [ "${keep_failed}" -eq 1 ] && [ -e "${keep_home}/.local/bin/herdr" ] && [ "$(cat "${keep_home}/.local/bin/herdr")" = "old broken binary content" ]; then
+    log_pass "${suite}: preserve existing binary when re-download fails"
+  else
+    log_fail "${suite}: existing binary was deleted or overwritten on download failure"
+  fi
+
+  # 3.14 再インストール時、インストーラ実行が失敗した場合に既存バイナリが復元されること
+  log_test "${suite}: restore existing binary from backup when installer execution fails"
+  local restore_home="${test_dir}/restore_home"
+  local restore_tmp="${test_dir}/restore_tmp"
+  mkdir -p "${restore_home}/.local/bin" "${restore_tmp}"
+  echo "original binary before install failure" > "${restore_home}/.local/bin/herdr"
+  chmod +x "${restore_home}/.local/bin/herdr"
+
+  local fake_fail_inst_bin="${test_dir}/fake_fail_inst_bin"
+  mkdir -p "${fake_fail_inst_bin}"
+  cat > "${fake_fail_inst_bin}/curl" << 'EOF'
+#!/bin/bash
+set -eu
+dest=""
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  if [ "${args[$i]}" = "-o" ]; then
+    i=$((i + 1))
+    dest="${args[$i]}"
+  fi
+  i=$((i + 1))
+done
+if [ -n "${dest}" ]; then
+  cat > "${dest}" << 'INSTALL_FAIL'
+#!/bin/sh
+exit 1
+INSTALL_FAIL
+fi
+printf '200'
+exit 0
+EOF
+  chmod +x "${fake_fail_inst_bin}/curl"
+
+  local restore_failed=0
+  (
+    export PATH="${fake_fail_inst_bin}:${PATH}"
+    export HOME="${restore_home}"
+    export TMPDIR="${restore_tmp}"
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  ) || restore_failed=1
+
+  if [ "${restore_failed}" -eq 1 ] && [ -e "${restore_home}/.local/bin/herdr" ] && \
+     [ "$(cat "${restore_home}/.local/bin/herdr")" = "original binary before install failure" ]; then
+    log_pass "${suite}: restore existing binary from backup when installer execution fails"
+  else
+    log_fail "${suite}: existing binary was not restored when installer failed"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -1305,6 +1703,454 @@ EOF
 }
 
 # -----------------------------------------------------------------------------
+# Test Suite 6: GitHub CLI packaging source and apt-packages.sh verification
+# -----------------------------------------------------------------------------
+test_gh_and_apt_packages() {
+  local suite="provision/github-cli.sh & apt-packages.sh gh verification"
+  local test_dir="${MASTER_TEST_DIR}/gh_apt_packages"
+  mkdir -p "${test_dir}"
+
+  local fake_bin="${test_dir}/bin"
+  mkdir -p "${fake_bin}"
+
+  local installed_flag="${test_dir}/gh_upgraded.flag"
+
+  # スタブ dpkg-query
+  cat > "${fake_bin}/dpkg-query" << EOF
+#!/bin/bash
+set -eu
+case "\$*" in
+  *db:Status-Status*gh*)
+    if [ "\${STUB_GH_INSTALLED:-1}" = "1" ]; then
+      echo "installed"
+    else
+      echo "not-installed"
+    fi
+    ;;
+  *db:Status-Status*)
+    echo "installed"
+    ;;
+  *Maintainer*gh*)
+    if [ -f "${installed_flag}" ]; then
+      echo "GitHub <support@github.com>"
+    else
+      echo "\${STUB_GH_MAINTAINER:-GitHub <support@github.com>}"
+    fi
+    ;;
+  *)
+    echo "ok"
+    ;;
+esac
+EOF
+  chmod +x "${fake_bin}/dpkg-query"
+
+  # スタブ apt-cache
+  cat > "${fake_bin}/apt-cache" << 'EOF'
+#!/bin/bash
+set -eu
+case "$*" in
+  *madison*gh*)
+    if [ "${STUB_MADISON_OFFICIAL:-1}" = "1" ]; then
+      echo "gh | 2.60.0 | https://cli.github.com/packages stable/main amd64 Packages"
+    else
+      echo "gh | 2.46.0 | http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages"
+    fi
+    ;;
+  *madison*docker-ce*)
+    echo "docker-ce | 27.0.0 | https://download.docker.com/linux/ubuntu noble/stable amd64 Packages"
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+  chmod +x "${fake_bin}/apt-cache"
+
+  # スタブ apt-get
+  local apt_log="${test_dir}/apt.log"
+  cat > "${fake_bin}/apt-get" << EOF
+#!/bin/bash
+set -eu
+printf '%s\n' "\$*" >> "${apt_log}"
+case "\$*" in
+  *install*gh*)
+    touch "${installed_flag}"
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "${fake_bin}/apt-get"
+
+  # スタブ gh
+  cat > "${fake_bin}/gh" << 'EOF'
+#!/bin/bash
+set -eu
+case "${STUB_GH_MODE:-default}" in
+  fail)
+    exit 1
+    ;;
+  hang)
+    sleep 10
+    ;;
+  *)
+    echo "gh version 2.60.0 (2026-10-01)"
+    exit 0
+    ;;
+esac
+EOF
+  chmod +x "${fake_bin}/gh"
+
+  local test_env=(
+    "PATH=${fake_bin}:${PATH}"
+    "CLI_VERIFY_TIMEOUT=1"
+  )
+
+  # 6.1 github-cli.sh: 空または破損した repo_list がある場合、スキップせず公式リポジトリを再設定する
+  log_test "${suite}: github-cli reconfigures when repo list is empty or corrupted"
+  local gh_dir="${test_dir}/gh_reconfig"
+  local gh_tmp="${test_dir}/gh_reconfig_tmp"
+  mkdir -p "${gh_dir}" "${gh_tmp}"
+  local gh_key="${gh_dir}/key.gpg"
+  local gh_repo="${gh_dir}/repo.list"
+  touch "${gh_key}"
+  echo "# corrupted list" > "${gh_repo}"
+
+  cat > "${fake_bin}/curl" << 'EOF'
+#!/bin/bash
+set -eu
+dest=""
+write_out=""
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  arg="${args[$i]}"
+  case "$arg" in
+    -o) i=$((i + 1)); dest="${args[$i]}" ;;
+    -w) i=$((i + 1)); write_out="${args[$i]}" ;;
+  esac
+  i=$((i + 1))
+done
+if [ -n "${dest}" ]; then printf 'valid-key\n' > "${dest}"; fi
+if [ -n "${write_out}" ]; then printf '200'; fi
+exit 0
+EOF
+  chmod +x "${fake_bin}/curl"
+
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${gh_tmp}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    bash "${REPO_ROOT}/provision/github-cli.sh" >/dev/null 2>&1
+  )
+
+  local has_official_url=0
+  if grep -qF "https://cli.github.com/packages" "${gh_repo}" 2>/dev/null; then
+    has_official_url=1
+  fi
+
+  if [ -s "${gh_key}" ] && [ "${has_official_url}" -eq 1 ]; then
+    log_pass "${suite}: github-cli reconfigures when repo list is empty or corrupted"
+  else
+    log_fail "${suite}: github-cli failed to reconfigure corrupted repo list"
+  fi
+
+  # 6.2 apt-packages.sh: Ubuntu 版 gh が存在する場合、all_installed が false となり公式版のインストールを実行する
+  log_test "${suite}: apt-packages detects Ubuntu universe gh and triggers install"
+  : > "${apt_log}"
+  rm -f "${installed_flag}"
+  local ubuntu_gh_run=0
+  (
+    export "${test_env[@]}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    export STUB_GH_MAINTAINER="Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>"
+    bash "${REPO_ROOT}/provision/apt-packages.sh" >/dev/null 2>&1
+  ) && ubuntu_gh_run=1
+
+  local apt_install_called=0
+  if grep -q "install.*gh" "${apt_log}"; then
+    apt_install_called=1
+  fi
+
+  if [ "${ubuntu_gh_run}" -eq 1 ] && [ "${apt_install_called}" -eq 1 ]; then
+    log_pass "${suite}: apt-packages detects Ubuntu universe gh and triggers install"
+  else
+    log_fail "${suite}: apt-packages did not trigger install for Ubuntu universe gh (run=${ubuntu_gh_run}, called=${apt_install_called})"
+  fi
+
+  # 6.3 apt-packages.sh: 公式版 gh が正常に導入されている場合、再実行時は apt-get update/install をスキップする
+  log_test "${suite}: apt-packages skips execution when official gh is installed and working"
+  : > "${apt_log}"
+  (
+    export "${test_env[@]}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    export STUB_GH_MAINTAINER="GitHub <support@github.com>"
+    export STUB_GH_MODE="default"
+    bash "${REPO_ROOT}/provision/apt-packages.sh" >/dev/null 2>&1
+  )
+
+  local apt_called_count
+  apt_called_count=$(wc -l < "${apt_log}" | tr -d ' ')
+
+  if [ "${apt_called_count}" -eq 0 ]; then
+    log_pass "${suite}: apt-packages skips execution when official gh is installed and working"
+  else
+    log_fail "${suite}: apt-packages ran unexpectedly when all packages were up to date"
+  fi
+
+  # 6.4 apt-packages.sh: gh --version が失敗する場合、all_installed が false となる
+  log_test "${suite}: apt-packages detects broken gh binary via --version"
+  : > "${apt_log}"
+  (
+    export "${test_env[@]}"
+    export GITHUB_CLI_KEYRING="${gh_key}"
+    export GITHUB_CLI_REPO_LIST="${gh_repo}"
+    export STUB_GH_MAINTAINER="GitHub <support@github.com>"
+    export STUB_GH_MODE="fail"
+    bash "${REPO_ROOT}/provision/apt-packages.sh" >/dev/null 2>&1
+  ) || true
+
+  local fail_detected=0
+  if grep -q "install.*gh" "${apt_log}" && grep -q -- "--reinstall" "${apt_log}"; then
+    fail_detected=1
+  fi
+
+  if [ "${fail_detected}" -eq 1 ]; then
+    log_pass "${suite}: apt-packages detects broken gh binary via --version"
+  else
+    log_fail "${suite}: broken gh binary was not detected or reinstalled"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Test Suite 7: coding-sandbox.yaml probes verification
+# -----------------------------------------------------------------------------
+test_probes() {
+  local suite="coding-sandbox.yaml probes"
+  local test_dir="${MASTER_TEST_DIR}/probes"
+  mkdir -p "${test_dir}"
+
+  local fake_bin="${test_dir}/bin"
+  local fake_home="${test_dir}/home"
+  mkdir -p "${fake_bin}" "${fake_home}/.local/bin" "${fake_home}/.ssh"
+
+  # 基本コマンドのスタブを作成（git, timeout は本物を実行するため含めない）
+  local basic_cmds=(curl wget jq less ssh gcc make rg fd fdfind unzip zip tree shellcheck nft pip3 pipx node npm)
+  for cmd in "${basic_cmds[@]}"; do
+    cat > "${fake_bin}/${cmd}" << 'EOF'
+#!/bin/bash
+exit 0
+EOF
+    chmod +x "${fake_bin}/${cmd}"
+  done
+
+  # スタブ dpkg-query
+  cat > "${fake_bin}/dpkg-query" << 'EOF'
+#!/bin/bash
+set -eu
+case "$*" in
+  *Maintainer*gh*)
+    echo "${STUB_PROBE_GH_MAINTAINER:-GitHub <support@github.com>}"
+    ;;
+  *)
+    echo "installed"
+    ;;
+esac
+EOF
+  chmod +x "${fake_bin}/dpkg-query"
+
+  # スタブ gh
+  cat > "${fake_bin}/gh" << 'EOF'
+#!/bin/bash
+set -eu
+if [ "${STUB_PROBE_GH_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
+echo "gh version 2.60.0"
+exit 0
+EOF
+  chmod +x "${fake_bin}/gh"
+
+  # スタブ CLI ツール群（herdr, agy, copilot, mise）
+  local cli_tools=(herdr agy copilot mise)
+  for tool in "${cli_tools[@]}"; do
+    local tool_upper
+    tool_upper=$(echo "${tool}" | tr '[:lower:]' '[:upper:]')
+    cat > "${fake_home}/.local/bin/${tool}" << EOF
+#!/bin/bash
+set -eu
+if [ "\${STUB_PROBE_${tool_upper}_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
+if [ "\${STUB_PROBE_${tool_upper}_HANG:-0}" = "1" ]; then
+  sleep 10
+fi
+echo "${tool} version 1.0.0"
+exit 0
+EOF
+    chmod +x "${fake_home}/.local/bin/${tool}"
+  done
+
+  local test_key="${test_dir}/key.gpg"
+  local test_repo="${test_dir}/repo.list"
+  echo "key" > "${test_key}"
+  echo "deb https://cli.github.com/packages stable main" > "${test_repo}"
+
+  # 7.1 probe basic tools: 公式 gh で成功、Ubuntu 版 gh で理由表示して失敗
+  log_test "${suite}: probe basic tools verifies official gh and reports failure cause"
+  local p1_script
+  p1_script=$(limactl template yq "${REPO_ROOT}/coding-sandbox.yaml" '.probes[] | select(.description | test("basic tools")) | .script')
+
+  local p1_success=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export GITHUB_CLI_KEYRING="${test_key}"
+    export GITHUB_CLI_REPO_LIST="${test_repo}"
+    export STUB_PROBE_GH_MAINTAINER="GitHub <support@github.com>"
+    export PROBE_TIMEOUT=1
+    export PROBE_SLEEP=0
+    bash -c "${p1_script}" >/dev/null 2>&1
+  ) && p1_success=1
+
+  local p1_ubuntu_failed=0
+  local p1_ubuntu_stderr="${test_dir}/p1_ubuntu.stderr"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export GITHUB_CLI_KEYRING="${test_key}"
+    export GITHUB_CLI_REPO_LIST="${test_repo}"
+    export STUB_PROBE_GH_MAINTAINER="Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>"
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p1_script}" 2>"${p1_ubuntu_stderr}"
+  ) || p1_ubuntu_failed=1
+
+  local has_ubuntu_cause=0
+  if grep -q "from Ubuntu universe" "${p1_ubuntu_stderr}" 2>/dev/null; then
+    has_ubuntu_cause=1
+  fi
+
+  if [ "${p1_success}" -eq 1 ] && [ "${p1_ubuntu_failed}" -eq 1 ] && [ "${has_ubuntu_cause}" -eq 1 ]; then
+    log_pass "${suite}: probe[1] verifies official gh and reports failure cause"
+  else
+    log_fail "${suite}: probe[1] gh verification failed"
+  fi
+
+  # 7.2 probe CLI tools: 全ツール正常で成功、起動失敗時に理由を表示して失敗
+  log_test "${suite}: probe CLI tools verifies via --version and reports cause"
+  local p3_script
+  p3_script=$(limactl template yq "${REPO_ROOT}/coding-sandbox.yaml" '.probes[] | select(.description | test("herdr, Antigravity")) | .script')
+
+  local p3_success=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_home}"
+    export PROBE_TIMEOUT=1
+    export PROBE_SLEEP=0
+    bash -c "${p3_script}" >/dev/null 2>&1
+  ) && p3_success=1
+
+  local p3_fail=0
+  local p3_fail_stderr="${test_dir}/p3_fail.stderr"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_home}"
+    export STUB_PROBE_AGY_FAIL=1
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p3_script}" 2>"${p3_fail_stderr}"
+  ) || p3_fail=1
+
+  local has_agy_cause=0
+  if grep -q "agy ('agy --version' exited with code 1)" "${p3_fail_stderr}" 2>/dev/null; then
+    has_agy_cause=1
+  fi
+
+  if [ "${p3_success}" -eq 1 ] && [ "${p3_fail}" -eq 1 ] && [ "${has_agy_cause}" -eq 1 ]; then
+    log_pass "${suite}: probe[3] verifies CLI tools via --version and reports cause"
+  else
+    log_fail "${suite}: probe[3] CLI tools verification failed"
+  fi
+
+  # 7.3 probe Git commit signing: 正常鍵で成功、鍵不整合で失敗
+  log_test "${suite}: probe Git commit signing verifies key pair and reports cause"
+  local p7_script
+  p7_script=$(limactl template yq "${REPO_ROOT}/coding-sandbox.yaml" '.probes[] | select(.description | test("signing")) | .script')
+
+  local git_home="${test_dir}/probe_git_home"
+  mkdir -p "${git_home}/.ssh"
+  ssh-keygen -t ed25519 -N '' -f "${git_home}/.ssh/id_ed25519_signing" -C "probe-key" >/dev/null 2>&1
+  HOME="${git_home}" XDG_CONFIG_HOME="${git_home}/.config" GIT_CONFIG_GLOBAL="${git_home}/.gitconfig" git config --global gpg.format ssh
+  HOME="${git_home}" XDG_CONFIG_HOME="${git_home}/.config" GIT_CONFIG_GLOBAL="${git_home}/.gitconfig" git config --global user.signingkey "${git_home}/.ssh/id_ed25519_signing"
+  HOME="${git_home}" XDG_CONFIG_HOME="${git_home}/.config" GIT_CONFIG_GLOBAL="${git_home}/.gitconfig" git config --global commit.gpgsign true
+
+  # 正常鍵（かつ core.hooksPath が存在しても影響を受けないこと）
+  local hook_dir="${git_home}/hooks"
+  mkdir -p "${hook_dir}"
+  cat > "${hook_dir}/pre-commit" << 'EOF'
+#!/bin/sh
+echo "probe pre-commit rejected" >&2
+exit 1
+EOF
+  chmod +x "${hook_dir}/pre-commit"
+  HOME="${git_home}" XDG_CONFIG_HOME="${git_home}/.config" GIT_CONFIG_GLOBAL="${git_home}/.gitconfig" git config --global core.hooksPath "${hook_dir}"
+
+  local p7_success=0
+  (
+    export HOME="${git_home}"
+    export XDG_CONFIG_HOME="${git_home}/.config"
+    export GIT_CONFIG_GLOBAL="${git_home}/.gitconfig"
+    export GIT_CONFIG_NOSYSTEM=1
+    export GIT_CONFIG_SYSTEM=/dev/null
+    export PROBE_TIMEOUT=1
+    export PROBE_SLEEP=0
+    bash -c "${p7_script}" >/dev/null 2>&1
+  ) && p7_success=1
+
+  # 不整合鍵で失敗し、stderr に理由が出力されること
+  echo "invalid-public-key" > "${git_home}/.ssh/id_ed25519_signing.pub"
+  local p7_mismatch_failed=0
+  local p7_mismatch_stderr="${test_dir}/p7_mismatch.stderr"
+  (
+    export HOME="${git_home}"
+    export XDG_CONFIG_HOME="${git_home}/.config"
+    export GIT_CONFIG_GLOBAL="${git_home}/.gitconfig"
+    export GIT_CONFIG_NOSYSTEM=1
+    export GIT_CONFIG_SYSTEM=/dev/null
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p7_script}" 2>"${p7_mismatch_stderr}"
+  ) || p7_mismatch_failed=1
+
+  local has_mismatch_cause=0
+  if grep -q "does not match private key" "${p7_mismatch_stderr}" 2>/dev/null; then
+    has_mismatch_cause=1
+  fi
+
+  # commit.gpgsign=no で署名無効化されている場合は通過すること
+  local p7_gpgsign_no_success=0
+  (
+    export HOME="${git_home}"
+    export XDG_CONFIG_HOME="${git_home}/.config"
+    export GIT_CONFIG_GLOBAL="${git_home}/.gitconfig"
+    export GIT_CONFIG_NOSYSTEM=1
+    export GIT_CONFIG_SYSTEM=/dev/null
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    git config --global commit.gpgsign no
+    bash -c "${p7_script}" >/dev/null 2>&1
+  ) && p7_gpgsign_no_success=1
+
+  if [ "${p7_success}" -eq 1 ] && [ "${p7_mismatch_failed}" -eq 1 ] && \
+     [ "${has_mismatch_cause}" -eq 1 ] && [ "${p7_gpgsign_no_success}" -eq 1 ]; then
+    log_pass "${suite}: probe Git commit signing verifies key pair and reports cause"
+  else
+    log_fail "${suite}: probe Git commit signing verification failed (success=${p7_success}, mismatch_fail=${p7_mismatch_failed}, cause=${has_mismatch_cause}, no_success=${p7_gpgsign_no_success})"
+  fi
+}
+
+# -----------------------------------------------------------------------------
 # Main Runner
 # -----------------------------------------------------------------------------
 echo "Running test suites for lima-coding-sandbox..."
@@ -1313,6 +2159,8 @@ test_agent_instructions
 test_cli_provisioning
 test_makefile_logic
 test_apt_key_provisioning
+test_gh_and_apt_packages
+test_probes
 
 echo "--------------------------------------------------"
 printf 'Test results: %d passed, %d failed\n' "${PASS_COUNT}" "${FAIL_COUNT}"

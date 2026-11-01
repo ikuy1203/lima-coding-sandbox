@@ -32,6 +32,35 @@ cleanup() {
 }
 trap cleanup EXIT
 
+verify_cli() {
+  local name="$1"
+  local bin="$2"
+  local verify_timeout="${CLI_VERIFY_TIMEOUT:-10}"
+
+  if [ ! -e "${bin}" ] && [ ! -L "${bin}" ]; then
+    echo >&2 "error: ${name} verification failed: ${bin} does not exist"
+    return 1
+  fi
+  if [ ! -x "${bin}" ]; then
+    echo >&2 "error: ${name} verification failed: ${bin} is not executable"
+    return 1
+  fi
+
+  local rc=0
+  if timeout -k 2 "${verify_timeout}" "${bin}" --version >/dev/null 2>&1; then
+    return 0
+  else
+    rc=$?
+  fi
+
+  if [ "${rc}" -eq 124 ]; then
+    echo >&2 "error: ${name} verification failed: '${bin} --version' timed out after ${verify_timeout}s"
+  else
+    echo >&2 "error: ${name} verification failed: '${bin} --version' exited with code ${rc}"
+  fi
+  return 1
+}
+
 is_transient_curl_rc() {
   case "$1" in
     6|7|16|18|28|35|52|55|56|92) return 0 ;;
@@ -167,11 +196,33 @@ download_file() {
   return 1
 }
 
-if [ ! -x "${HOME}/.local/bin/mise" ]; then
+need_install=1
+broken_existing=false
+bin="${HOME}/.local/bin/mise"
+if [ -e "${bin}" ] || [ -L "${bin}" ]; then
+  if verify_cli "mise" "${bin}"; then
+    need_install=0
+  else
+    echo >&2 "warning: existing mise binary at ${bin} is broken or failed verification; reinstalling"
+    broken_existing=true
+  fi
+fi
+
+if [ "${need_install}" -eq 1 ]; then
   installer=$(mktemp)
   tmp_files+=("${installer}")
   download_file https://mise.run "${installer}"
-  sh "${installer}"
+  if [ "${broken_existing}" = true ] && [ -e "${bin}" ]; then
+    mv -f "${bin}" "${bin}.bak"
+  fi
+  if ! { sh "${installer}" && verify_cli "mise" "${bin}"; }; then
+    if [ -e "${bin}.bak" ]; then
+      echo >&2 "warning: reinstallation failed; restoring original binary"
+      mv -f "${bin}.bak" "${bin}"
+    fi
+    exit 1
+  fi
+  rm -f "${bin}.bak"
 fi
 
 marker="# added by lima-coding-sandbox provision/mise.sh"

@@ -169,8 +169,14 @@ download_file() {
   return 1
 }
 
+is_repo_configured() {
+  [ -s "${keyring}" ] && [ -s "${sources}" ] && \
+    grep -qF "https://download.docker.com/linux/ubuntu" "${sources}" 2>/dev/null && \
+    grep -qF "Signed-By: ${keyring}" "${sources}" 2>/dev/null
+}
+
 # 公式 apt リポジトリと鍵が登録済みであればスキップする
-if [ ! -f "${keyring}" ] || [ ! -f "${sources}" ]; then
+if ! is_repo_configured; then
   # 競合する非公式パッケージを削除する
   conflicting_packages=$(dpkg --get-selections docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc 2>/dev/null | cut -f1 || true)
   if [ -n "${conflicting_packages}" ]; then

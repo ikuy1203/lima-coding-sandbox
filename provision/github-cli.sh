@@ -26,10 +26,16 @@ export DEBIAN_FRONTEND=noninteractive
 keyring="${GITHUB_CLI_KEYRING:-/etc/apt/keyrings/githubcli-archive-keyring.gpg}"
 repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
 
-# 公式 apt リポジトリと鍵が登録済みであれば終了する
-# （gh パッケージの存在判定にすると、万が一の失敗時に誤って入った Ubuntu 版の gh により
-# 公式リポジトリの登録が再試行されなくなるため、リポジトリ設定ファイルの有無で判定する）
-if [ -f "${keyring}" ] && [ -f "${repo_list}" ]; then
+is_repo_configured() {
+  [ -s "${keyring}" ] && [ -s "${repo_list}" ] && \
+    grep -qF "https://cli.github.com/packages" "${repo_list}" 2>/dev/null && \
+    grep -qF "signed-by=${keyring}" "${repo_list}" 2>/dev/null
+}
+
+# 公式 apt リポジトリと鍵が正常に登録済みであれば終了する
+# （gh パッケージの存在判定にすると、既存の Ubuntu 版 gh がある場合に
+# 公式リポジトリの登録がスキップされてしまうため、リポジトリ設定ファイルの内容で判定する）
+if is_repo_configured; then
   exit 0
 fi
 
