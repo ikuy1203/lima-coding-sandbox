@@ -142,22 +142,172 @@ probes:
     #!/bin/bash
     set -eu -o pipefail
     # provision/apt-packages.sh で入れるパッケージ（gh を含む）の主なコマンド
-    cmds=(git curl wget jq less ssh gh gcc make rg fd fdfind unzip zip tree shellcheck nft pip3 pipx node npm)
-    # 見つからないコマンドを空白区切りで出力する
+    cmds=(git curl wget jq less ssh gcc make rg fd fdfind unzip zip tree shellcheck nft pip3 pipx node npm)
+    check_gh_repo() {
+      local repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
+      local keyring="${GITHUB_CLI_KEYRING:-/etc/apt/keyrings/githubcli-archive-keyring.gpg}"
+      local native_arch
+      native_arch="$(dpkg --print-architecture 2>/dev/null || true)"
+      [ -n "${native_arch}" ] || return 1
+      [ -s "${keyring}" ] && [ -s "${repo_list}" ] || return 1
+      awk -v key="${keyring}" -v uri="https://cli.github.com/packages" -v arch="${native_arch}" '
+        {
+          line = $0
+          sub(/#.*$/, "", line)
+          if (line !~ /^[ \t]*deb([ \t]|$)/) next
+          key_ok = 0; uri_ok = 0; suite_ok = 0; comp_ok = 0
+          has_set = 0; set_has_native = 0; add_native = 0; rem_native = 0
+          if (match(line, /\[[^]]+\]/)) {
+            opts = substr(line, RSTART + 1, RLENGTH - 2)
+            rest = substr(line, RSTART + RLENGTH)
+            n_opts = split(opts, opt_arr, /[ \t]+/)
+            for (i = 1; i <= n_opts; i++) {
+              if (opt_arr[i] ~ /^signed-by=/) {
+                val = opt_arr[i]
+                sub(/^signed-by=/, "", val)
+                gsub(/^"|"$/, "", val)
+                if (val == key) key_ok = 1
+              } else if (opt_arr[i] ~ /^arch=/) {
+                val = opt_arr[i]
+                sub(/^arch=/, "", val)
+                gsub(/^"|"$/, "", val)
+                has_set = 1
+                set_has_native = 0
+                n_archs = split(val, arch_arr, /,/)
+                for (k = 1; k <= n_archs; k++) {
+                  if (arch_arr[k] == arch) set_has_native = 1
+                }
+              } else if (opt_arr[i] ~ /^arch\+=/) {
+                val = opt_arr[i]
+                sub(/^arch\+=/, "", val)
+                gsub(/^"|"$/, "", val)
+                n_archs = split(val, arch_arr, /,/)
+                for (k = 1; k <= n_archs; k++) {
+                  if (arch_arr[k] == arch) add_native = 1
+                }
+              } else if (opt_arr[i] ~ /^arch-=/) {
+                val = opt_arr[i]
+                sub(/^arch-=/, "", val)
+                gsub(/^"|"$/, "", val)
+                n_archs = split(val, arch_arr, /,/)
+                for (k = 1; k <= n_archs; k++) {
+                  if (arch_arr[k] == arch) rem_native = 1
+                }
+              }
+            }
+          } else {
+            rest = line
+            sub(/^[ \t]*deb[ \t]+/, "", rest)
+          }
+          has_native = (has_set ? set_has_native : 1)
+          if (add_native) has_native = 1
+          if (rem_native) has_native = 0
+          arch_ok = has_native
+          sub(/^[ \t]+/, "", rest)
+          n_rest = split(rest, rest_arr, /[ \t]+/)
+          if (n_rest >= 1) {
+            entry_uri = rest_arr[1]
+            sub(/\/+$/, "", entry_uri)
+            target_uri = uri
+            sub(/\/+$/, "", target_uri)
+            if (entry_uri == target_uri) uri_ok = 1
+          }
+          if (n_rest >= 2 && rest_arr[2] == "stable") suite_ok = 1
+          for (j = 3; j <= n_rest; j++) {
+            if (rest_arr[j] == "main") comp_ok = 1
+          }
+          if (key_ok && uri_ok && suite_ok && comp_ok && arch_ok) {
+            found = 1
+            exit 0
+          }
+        }
+        END { exit !found }
+      ' "${repo_list}" 2>/dev/null
+    }
+    check_gh() {
+      local gh_cmd="${GH_BIN:-/usr/bin/gh}"
+      [ -x "${gh_cmd}" ] || return 1
+      check_gh_repo || return 1
+      # shellcheck disable=SC2016
+      [ "$(dpkg-query -W -f='${db:Status-Status}' gh 2>/dev/null)" = installed ] || return 1
+      local maintainer
+      maintainer=$(dpkg-query -W -f='${Maintainer}' gh 2>/dev/null) || return 1
+      [ -n "${maintainer}" ] || return 1
+      case "${maintainer}" in
+        *"GitHub"*) ;;
+        *) return 1 ;;
+      esac
+      timeout -k 2 5 "${gh_cmd}" --version >/dev/null 2>&1 || return 1
+      return 0
+    }
     missing() {
       local cmd
       for cmd in "${cmds[@]}"; do
         command -v "$cmd" >/dev/null || printf '%s ' "$cmd"
       done
+      check_gh || printf '%s ' "gh"
     }
-    # 全コマンドをまとめて確認し、30 秒以内にそろわなければ、見つからないものを全件表示して失敗する
-    deadline=$((SECONDS + 30))
+    gh_status() {
+      local gh_cmd="${GH_BIN:-/usr/bin/gh}"
+      if [ ! -x "${gh_cmd}" ]; then
+        echo "gh (${gh_cmd} not found or not executable)"
+        return 0
+      fi
+
+      if ! check_gh_repo; then
+        echo "gh (official apt repository not configured or invalid)"
+        return 0
+      fi
+
+      # shellcheck disable=SC2016
+      local pkg_status
+      pkg_status=$(dpkg-query -W -f='${db:Status-Status}' gh 2>/dev/null || true)
+      if [ "${pkg_status}" != "installed" ]; then
+        echo "gh (apt package 'gh' is not installed)"
+        return 0
+      fi
+
+      local maintainer
+      if ! maintainer=$(dpkg-query -W -f='${Maintainer}' gh 2>/dev/null) || [ -z "${maintainer}" ]; then
+        echo "gh (unable to query package maintainer metadata)"
+        return 0
+      fi
+
+      case "${maintainer}" in
+        *"GitHub"*)
+          ;;
+        *"Ubuntu Developers"*|*"Debian "*Developers*)
+          echo "gh (installed package is from Ubuntu universe instead of official cli.github.com)"
+          return 0
+          ;;
+        *)
+          echo "gh (package maintainer '${maintainer}' is not official GitHub)"
+          return 0
+          ;;
+      esac
+
+      if ! timeout -k 2 5 "${gh_cmd}" --version >/dev/null 2>&1; then
+        echo "gh ('gh --version' failed or timed out)"
+        return 0
+      fi
+
+      echo "gh (verification failed)"
+    }
+    # 全コマンドをまとめて確認し、30 秒以内にそろわなければ、見つからないもの・不整合なものを全件表示して失敗する
+    deadline=$((SECONDS + ${PROBE_TIMEOUT:-30}))
     while m=$(missing) && [ -n "$m" ]; do
       if [ "$SECONDS" -ge "$deadline" ]; then
-        echo >&2 "not installed yet: ${m% }"
+        echo >&2 "the following tools are not installed or failed verification:"
+        for item in $m; do
+          if [ "$item" = "gh" ]; then
+            echo >&2 "  - $(gh_status)"
+          else
+            echo >&2 "  - $item (command not found)"
+          fi
+        done
         exit 1
       fi
-      sleep 3
+      sleep "${PROBE_SLEEP:-3}"
     done
   hint: See "/var/log/cloud-init-output.log" in the guest
 - description: connections to the host loopback (host.lima.internal) to be blocked
@@ -179,21 +329,51 @@ probes:
     #!/bin/bash
     set -eu -o pipefail
     bins=(herdr agy copilot mise)
-    # 未インストールの実行ファイルを空白区切りで出力する
+    check_bin() {
+      local bin="$1"
+      local path="$HOME/.local/bin/$bin"
+      [ -x "$path" ] || return 1
+      timeout -k 2 5 "$path" --version >/dev/null 2>&1 || return 1
+      return 0
+    }
     missing() {
       local bin
       for bin in "${bins[@]}"; do
-        [ -x "$HOME/.local/bin/$bin" ] || printf '%s ' "$bin"
+        check_bin "$bin" || printf '%s ' "$bin"
       done
     }
-    # 全バイナリをまとめて確認し、30 秒以内にそろわなければ、見つからないものを全件表示して失敗する
-    deadline=$((SECONDS + 30))
+    bin_status() {
+      local bin="$1"
+      local path="$HOME/.local/bin/$bin"
+      if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+        echo "$bin (file not found)"
+      elif [ ! -x "$path" ]; then
+        echo "$bin (file is not executable)"
+      else
+        local rc=0
+        if timeout -k 2 5 "$path" --version >/dev/null 2>&1; then
+          rc=0
+        else
+          rc=$?
+        fi
+        if [ "$rc" -eq 124 ]; then
+          echo "$bin ('$bin --version' timed out after 5s)"
+        else
+          echo "$bin ('$bin --version' exited with code $rc)"
+        fi
+      fi
+    }
+    # 全バイナリをまとめて確認し、30 秒以内にそろわなければ、未導入・検証失敗したものを全件表示して失敗する
+    deadline=$((SECONDS + ${PROBE_TIMEOUT:-30}))
     while m=$(missing) && [ -n "$m" ]; do
       if [ "$SECONDS" -ge "$deadline" ]; then
-        echo >&2 "not installed yet: ${m% }"
+        echo >&2 "the following CLI tools are not installed or failed verification:"
+        for bin in $m; do
+          echo >&2 "  - $(bin_status "$bin")"
+        done
         exit 1
       fi
-      sleep 3
+      sleep "${PROBE_SLEEP:-3}"
     done
   hint: See "/var/log/cloud-init-output.log" in the guest
 - description: mise shims to be on PATH in login shells
@@ -259,17 +439,121 @@ probes:
       exit 1
     fi
   hint: See "/var/log/cloud-init-output.log" in the guest
-- description: SSH key for Git commit signing to be created
+- description: Git commit signing to be configured and verified
   script: |
     #!/bin/bash
     set -eu -o pipefail
-    # provision/git-config.sh で作る署名用の鍵
-    # $1 は内側の bash で展開させる
-    # shellcheck disable=SC2016
-    if ! timeout 30s bash -c 'until [ -f "$1" ]; do sleep 3; done' _ "$HOME/.ssh/id_ed25519_signing.pub"; then
-      echo >&2 "SSH key for Git commit signing is not created yet"
-      exit 1
-    fi
+    # provision/git-config.sh で設定されるコミット署名と鍵の整合性を確認する
+    key="$HOME/.ssh/id_ed25519_signing"
+
+    signing_failure_reason=""
+    verify_signing() {
+      signing_failure_reason=""
+      local commit_sign raw_commit_sign get_status get_err gpg_format signing_key default_key_cmd
+      get_status=0
+      raw_commit_sign=$(git config --includes --global --get commit.gpgsign 2>/dev/null) || get_status=$?
+      if [ "${get_status}" -eq 1 ]; then
+        commit_sign="false"
+      elif [ "${get_status}" -ne 0 ]; then
+        get_err=$(git config --includes --global --get commit.gpgsign 2>&1 || true)
+        signing_failure_reason="failed to query commit.gpgsign: ${get_err}"
+        return 1
+      else
+        if ! commit_sign=$(git config --includes --global --type=bool --get commit.gpgsign 2>/dev/null); then
+          signing_failure_reason="invalid boolean config value for commit.gpgsign: '${raw_commit_sign}'"
+          return 1
+        fi
+      fi
+      gpg_format=$(git config --includes --global --get gpg.format 2>/dev/null || true)
+      signing_key=$(git config --includes --global --get user.signingkey 2>/dev/null || true)
+      signing_key="${signing_key/#\~/$HOME}"
+      default_key_cmd=$(git config --includes --global --get gpg.ssh.defaultKeyCommand 2>/dev/null || true)
+
+      # 署名が有効化されていない（未設定、明示的 false/no/0 等）場合は尊重して通過
+      if [ "${commit_sign}" != "true" ]; then
+        return 0
+      fi
+
+      # 独自の署名設定が明示されている場合は尊重して通過
+      if [ -n "${default_key_cmd}" ] || [ "${signing_key}" != "${key}" ] || [ "${gpg_format}" != "ssh" ]; then
+        return 0
+      fi
+
+      # テンプレートの鍵を使う場合、秘密鍵と公開鍵が存在し一致することを確認
+      if [ ! -s "${key}" ]; then
+        signing_failure_reason="private key ${key} is missing or empty"
+        return 1
+      fi
+
+      local derived_pub actual_pub
+      if ! derived_pub=$(ssh-keygen -y -P '' -f "${key}" 2>&1); then
+        case "${derived_pub}" in
+          *[Pp]assphrase*|*[Ii]ncorrect*)
+            return 0 ;;
+          *)
+            signing_failure_reason="failed to read private key: ${derived_pub}"
+            return 1 ;;
+        esac
+      fi
+
+      if [ ! -s "${key}.pub" ]; then
+        signing_failure_reason="public key ${key}.pub is missing or empty"
+        return 1
+      fi
+
+      actual_pub=$(awk '{print $1, $2}' "${key}.pub")
+      derived_pub=$(echo "${derived_pub}" | awk '{print $1, $2}')
+      if [ "${derived_pub}" != "${actual_pub}" ]; then
+        signing_failure_reason="public key does not match private key"
+        return 1
+      fi
+
+      # 一時リポジトリで実際に署名コミットと検証が行えることを確認
+      local td
+      td=$(mktemp -d)
+      local rc=0
+      if ! (
+        git init -q "${td}"
+        local configured_name configured_email
+        configured_name=$(git config --includes --global --get user.name 2>/dev/null || true)
+        configured_email=$(git config --includes --global --get user.email 2>/dev/null || true)
+
+        if [ -z "${configured_name}" ] || [ -z "${configured_email}" ]; then
+          # 未指定時は検証用ローカル設定で署名機構をテスト
+          local test_signers="${td}/allowed_signers"
+          printf 'diagnostic@example.com namespaces="git" %s\n' "${actual_pub}" > "${test_signers}"
+          git -C "${td}" config user.name "Probe User"
+          git -C "${td}" config user.email "probe@example.com"
+          git -C "${td}" config gpg.format ssh
+          git -C "${td}" config user.signingkey "${key}"
+          git -C "${td}" config commit.gpgsign true
+          git -C "${td}" config gpg.ssh.allowedSignersFile "${test_signers}"
+          timeout -k 2 5 git -C "${td}" -c core.hooksPath=/dev/null commit -q --allow-empty --no-verify -m "probe commit" && \
+            timeout -k 2 5 git -C "${td}" verify-commit HEAD >/dev/null 2>&1
+        else
+          timeout -k 2 5 git -C "${td}" -c core.hooksPath=/dev/null commit -q --allow-empty --no-verify -m "probe commit" && \
+            timeout -k 2 5 git -C "${td}" verify-commit HEAD >/dev/null 2>&1
+        fi
+      ); then
+        signing_failure_reason="temporary test commit or signature verification failed"
+        rc=1
+      fi
+      rm -rf "${td}"
+      return "${rc}"
+    }
+
+    deadline=$((SECONDS + ${PROBE_TIMEOUT:-30}))
+    until verify_signing; do
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        if [ -n "${signing_failure_reason}" ]; then
+          echo >&2 "Git commit signing verification failed or timed out (${signing_failure_reason})"
+        else
+          echo >&2 "Git commit signing verification failed or timed out"
+        fi
+        exit 1
+      fi
+      sleep "${PROBE_SLEEP:-3}"
+    done
   hint: See "/var/log/cloud-init-output.log" in the guest
 - description: agent instruction files to be configured
   script: |

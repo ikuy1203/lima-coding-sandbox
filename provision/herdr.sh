@@ -11,10 +11,6 @@
 # （内部のタイムアウト・リトライや後始末は上流ツールの実装に依存する）。
 set -eux -o pipefail
 
-if [ -x "${HOME}/.local/bin/herdr" ]; then
-  exit 0
-fi
-
 tmp_files=()
 cleanup() {
   if [ "${#tmp_files[@]}" -gt 0 ]; then
@@ -22,6 +18,45 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+verify_cli() {
+  local name="$1"
+  local bin="$2"
+  local verify_timeout="${CLI_VERIFY_TIMEOUT:-10}"
+
+  if [ ! -e "${bin}" ] && [ ! -L "${bin}" ]; then
+    echo >&2 "error: ${name} verification failed: ${bin} does not exist"
+    return 1
+  fi
+  if [ ! -x "${bin}" ]; then
+    echo >&2 "error: ${name} verification failed: ${bin} is not executable"
+    return 1
+  fi
+
+  local rc=0
+  if timeout -k 2 "${verify_timeout}" "${bin}" --version >/dev/null 2>&1; then
+    return 0
+  else
+    rc=$?
+  fi
+
+  if [ "${rc}" -eq 124 ]; then
+    echo >&2 "error: ${name} verification failed: '${bin} --version' timed out after ${verify_timeout}s"
+  else
+    echo >&2 "error: ${name} verification failed: '${bin} --version' exited with code ${rc}"
+  fi
+  return 1
+}
+
+bin="${HOME}/.local/bin/herdr"
+broken_existing=false
+if [ -e "${bin}" ] || [ -L "${bin}" ]; then
+  if verify_cli "herdr" "${bin}"; then
+    exit 0
+  fi
+  echo >&2 "warning: existing herdr binary at ${bin} is broken or failed verification; reinstalling"
+  broken_existing=true
+fi
 
 is_transient_curl_rc() {
   case "$1" in
@@ -161,4 +196,18 @@ download_file() {
 installer=$(mktemp)
 tmp_files+=("${installer}")
 download_file https://herdr.dev/install.sh "${installer}"
-sh "${installer}"
+backup_bin=""
+if [ "${broken_existing}" = true ] && { [ -e "${bin}" ] || [ -L "${bin}" ]; }; then
+  backup_bin=$(mktemp "${bin}.bak.XXXXXX")
+  mv -f "${bin}" "${backup_bin}"
+fi
+if ! { sh "${installer}" && verify_cli "herdr" "${bin}"; }; then
+  if [ -n "${backup_bin}" ] && { [ -e "${backup_bin}" ] || [ -L "${backup_bin}" ]; }; then
+    echo >&2 "warning: reinstallation failed; restoring original binary"
+    mv -f "${backup_bin}" "${bin}"
+  fi
+  exit 1
+fi
+if [ -n "${backup_bin}" ]; then
+  rm -f "${backup_bin}"
+fi

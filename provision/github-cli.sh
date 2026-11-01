@@ -26,10 +26,90 @@ export DEBIAN_FRONTEND=noninteractive
 keyring="${GITHUB_CLI_KEYRING:-/etc/apt/keyrings/githubcli-archive-keyring.gpg}"
 repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
 
-# 公式 apt リポジトリと鍵が登録済みであれば終了する
-# （gh パッケージの存在判定にすると、万が一の失敗時に誤って入った Ubuntu 版の gh により
-# 公式リポジトリの登録が再試行されなくなるため、リポジトリ設定ファイルの有無で判定する）
-if [ -f "${keyring}" ] && [ -f "${repo_list}" ]; then
+is_repo_configured() {
+  local native_arch
+  native_arch="$(dpkg --print-architecture 2>/dev/null || true)"
+  [ -n "${native_arch}" ] || return 1
+  [ -s "${keyring}" ] && [ -s "${repo_list}" ] && \
+    awk -v key="${keyring}" -v uri="https://cli.github.com/packages" -v arch="${native_arch}" '
+      {
+        line = $0
+        sub(/#.*$/, "", line)
+        if (line !~ /^[ \t]*deb([ \t]|$)/) next
+        key_ok = 0; uri_ok = 0; suite_ok = 0; comp_ok = 0
+        has_set = 0; set_has_native = 0; add_native = 0; rem_native = 0
+        if (match(line, /\[[^]]+\]/)) {
+          opts = substr(line, RSTART + 1, RLENGTH - 2)
+          rest = substr(line, RSTART + RLENGTH)
+          n_opts = split(opts, opt_arr, /[ \t]+/)
+          for (i = 1; i <= n_opts; i++) {
+            if (opt_arr[i] ~ /^signed-by=/) {
+              val = opt_arr[i]
+              sub(/^signed-by=/, "", val)
+              gsub(/^"|"$/, "", val)
+              if (val == key) key_ok = 1
+            } else if (opt_arr[i] ~ /^arch=/) {
+              val = opt_arr[i]
+              sub(/^arch=/, "", val)
+              gsub(/^"|"$/, "", val)
+              has_set = 1
+              set_has_native = 0
+              n_archs = split(val, arch_arr, /,/)
+              for (k = 1; k <= n_archs; k++) {
+                if (arch_arr[k] == arch) set_has_native = 1
+              }
+            } else if (opt_arr[i] ~ /^arch\+=/) {
+              val = opt_arr[i]
+              sub(/^arch\+=/, "", val)
+              gsub(/^"|"$/, "", val)
+              n_archs = split(val, arch_arr, /,/)
+              for (k = 1; k <= n_archs; k++) {
+                if (arch_arr[k] == arch) add_native = 1
+              }
+            } else if (opt_arr[i] ~ /^arch-=/) {
+              val = opt_arr[i]
+              sub(/^arch-=/, "", val)
+              gsub(/^"|"$/, "", val)
+              n_archs = split(val, arch_arr, /,/)
+              for (k = 1; k <= n_archs; k++) {
+                if (arch_arr[k] == arch) rem_native = 1
+              }
+            }
+          }
+        } else {
+          rest = line
+          sub(/^[ \t]*deb[ \t]+/, "", rest)
+        }
+        has_native = (has_set ? set_has_native : 1)
+        if (add_native) has_native = 1
+        if (rem_native) has_native = 0
+        arch_ok = has_native
+        sub(/^[ \t]+/, "", rest)
+        n_rest = split(rest, rest_arr, /[ \t]+/)
+        if (n_rest >= 1) {
+          entry_uri = rest_arr[1]
+          sub(/\/+$/, "", entry_uri)
+          target_uri = uri
+          sub(/\/+$/, "", target_uri)
+          if (entry_uri == target_uri) uri_ok = 1
+        }
+        if (n_rest >= 2 && rest_arr[2] == "stable") suite_ok = 1
+        for (j = 3; j <= n_rest; j++) {
+          if (rest_arr[j] == "main") comp_ok = 1
+        }
+        if (key_ok && uri_ok && suite_ok && comp_ok && arch_ok) {
+          found = 1
+          exit 0
+        }
+      }
+      END { exit !found }
+    ' "${repo_list}" 2>/dev/null
+}
+
+# 公式 apt リポジトリと鍵が正常に登録済みであれば終了する
+# （gh パッケージの存在判定にすると、既存の Ubuntu 版 gh がある場合に
+# 公式リポジトリの登録がスキップされてしまうため、リポジトリ設定ファイルの内容で判定する）
+if is_repo_configured; then
   exit 0
 fi
 

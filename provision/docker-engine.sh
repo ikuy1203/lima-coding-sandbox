@@ -169,8 +169,139 @@ download_file() {
   return 1
 }
 
+get_ubuntu_codename() {
+  local ubuntu_codename="${DOCKER_UBUNTU_CODENAME:-}"
+  local os_release_file="${DOCKER_OS_RELEASE_FILE:-/etc/os-release}"
+  if [ -z "${ubuntu_codename}" ] && [ -f "${os_release_file}" ]; then
+    # shellcheck disable=SC1090
+    . "${os_release_file}"
+    ubuntu_codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+  fi
+  echo "${ubuntu_codename}"
+}
+
+is_repo_configured() {
+  local codename
+  codename="$(get_ubuntu_codename)"
+  [ -n "${codename}" ] || return 1
+  local native_arch
+  native_arch="$(dpkg --print-architecture 2>/dev/null || true)"
+  [ -n "${native_arch}" ] || return 1
+  [ -s "${keyring}" ] && [ -s "${sources}" ] && \
+    awk -v uri="https://download.docker.com/linux/ubuntu" -v key="${keyring}" -v suite="${codename}" -v arch="${native_arch}" '
+      BEGIN { RS = ""; found = 0 }
+      {
+        has_type = 0; has_uri = 0; has_suite = 0; has_comp = 0; has_key = 0; enabled = 1
+        has_set = 0; set_has_native = 0; add_native = 0; rem_native = 0
+
+        # Deb822 continuation lines: fold indented lines into preceding field
+        n_raw = split($0, raw_lines, "\n")
+        n_fields = 0
+        delete fields
+        for (i = 1; i <= n_raw; i++) {
+          rline = raw_lines[i]
+          sub(/#.*$/, "", rline)
+          sub(/[ \t]+$/, "", rline)
+          if (rline ~ /^[ \t]*$/) continue
+          if (rline ~ /^[ \t]+/) {
+            sub(/^[ \t]+/, "", rline)
+            if (n_fields > 0) {
+              fields[n_fields] = fields[n_fields] " " rline
+            }
+          } else {
+            n_fields++
+            fields[n_fields] = rline
+          }
+        }
+
+        for (i = 1; i <= n_fields; i++) {
+          line = fields[i]
+          sub(/^[ \t]+/, "", line)
+          sub(/[ \t]+$/, "", line)
+          if (line == "") continue
+          if (tolower(line) ~ /^enabled:[ \t]*(no|false|0)([ \t]|$)/) enabled = 0
+          if (line ~ /^types:[ \t]*/ || line ~ /^Types:[ \t]*/) {
+            val = line
+            sub(/^[a-zA-Z]+:[ \t]*/, "", val)
+            n_types = split(val, twords, /[ \t]+/)
+            for (j = 1; j <= n_types; j++) {
+              if (twords[j] == "deb") has_type = 1
+            }
+          }
+          if (line ~ /^[aA]rchitectures:[ \t]*/) {
+            val = line
+            sub(/^[a-zA-Z]+:[ \t]*/, "", val)
+            has_set = 1
+            set_has_native = 0
+            n_archs = split(val, awords, /[ \t]+/)
+            for (j = 1; j <= n_archs; j++) {
+              if (awords[j] == arch) set_has_native = 1
+            }
+          }
+          if (line ~ /^[aA]rchitectures-[aA]dd:[ \t]*/) {
+            val = line
+            sub(/^[a-zA-Z-]+:[ \t]*/, "", val)
+            n_archs = split(val, awords, /[ \t]+/)
+            for (j = 1; j <= n_archs; j++) {
+              if (awords[j] == arch) add_native = 1
+            }
+          }
+          if (line ~ /^[aA]rchitectures-[rR]emove:[ \t]*/) {
+            val = line
+            sub(/^[a-zA-Z-]+:[ \t]*/, "", val)
+            n_archs = split(val, awords, /[ \t]+/)
+            for (j = 1; j <= n_archs; j++) {
+              if (awords[j] == arch) rem_native = 1
+            }
+          }
+          if (line ~ /^URIs:[ \t]*/) {
+            val = line
+            sub(/^URIs:[ \t]*/, "", val)
+            n_uris = split(val, uwords, /[ \t]+/)
+            for (j = 1; j <= n_uris; j++) {
+              u = uwords[j]
+              sub(/\/+$/, "", u)
+              target_u = uri
+              sub(/\/+$/, "", target_u)
+              if (u == target_u) has_uri = 1
+            }
+          }
+          if (line ~ /^Suites:[ \t]*/) {
+            val = line
+            sub(/^Suites:[ \t]*/, "", val)
+            n_suites = split(val, swords, /[ \t]+/)
+            for (j = 1; j <= n_suites; j++) {
+              if (swords[j] == suite) has_suite = 1
+            }
+          }
+          if (line ~ /^Components:[ \t]*/) {
+            val = line
+            sub(/^Components:[ \t]*/, "", val)
+            n_comps = split(val, cwords, /[ \t]+/)
+            for (j = 1; j <= n_comps; j++) {
+              if (cwords[j] == "stable") has_comp = 1
+            }
+          }
+          if (line ~ /^Signed-By:[ \t]*/) {
+            val = line
+            sub(/^Signed-By:[ \t]*/, "", val)
+            sub(/^[ \t"]+/, "", val)
+            sub(/[ \t"]+$/, "", val)
+            if (val == key) has_key = 1
+          }
+        }
+        has_native = (has_set ? set_has_native : 1)
+        if (add_native) has_native = 1
+        if (rem_native) has_native = 0
+        arch_ok = has_native
+        if (has_type && has_uri && has_suite && has_comp && has_key && arch_ok && enabled) found = 1
+      }
+      END { exit !found }
+    ' "${sources}" 2>/dev/null
+}
+
 # 公式 apt リポジトリと鍵が登録済みであればスキップする
-if [ ! -f "${keyring}" ] || [ ! -f "${sources}" ]; then
+if ! is_repo_configured; then
   # 競合する非公式パッケージを削除する
   conflicting_packages=$(dpkg --get-selections docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc 2>/dev/null | cut -f1 || true)
   if [ -n "${conflicting_packages}" ]; then
@@ -194,17 +325,9 @@ if [ ! -f "${keyring}" ] || [ ! -f "${sources}" ]; then
   rm -f "${out_key}"
 
   install -m 0755 -d "$(dirname "${sources}")"
-  ubuntu_codename="${DOCKER_UBUNTU_CODENAME:-}"
-  os_release_file="${DOCKER_OS_RELEASE_FILE:-/etc/os-release}"
+  ubuntu_codename="$(get_ubuntu_codename)"
   if [ -z "${ubuntu_codename}" ]; then
-    if [ -f "${os_release_file}" ]; then
-      # shellcheck disable=SC1090
-      . "${os_release_file}"
-      ubuntu_codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
-    fi
-  fi
-  if [ -z "${ubuntu_codename}" ]; then
-    echo >&2 "error: could not determine Ubuntu codename from ${os_release_file} (and DOCKER_UBUNTU_CODENAME is unset)"
+    echo >&2 "error: could not determine Ubuntu codename from ${DOCKER_OS_RELEASE_FILE:-/etc/os-release} (and DOCKER_UBUNTU_CODENAME is unset)"
     exit 1
   fi
 

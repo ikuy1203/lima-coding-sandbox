@@ -58,16 +58,130 @@ expected_packages=(
   "${docker_packages[@]}"
 )
 
+is_official_gh_repo_configured() {
+  local repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
+  local keyring="${GITHUB_CLI_KEYRING:-/etc/apt/keyrings/githubcli-archive-keyring.gpg}"
+  local native_arch
+  native_arch="$(dpkg --print-architecture 2>/dev/null || true)"
+  [ -n "${native_arch}" ] || return 1
+  [ -s "${keyring}" ] && [ -s "${repo_list}" ] || return 1
+  awk -v key="${keyring}" -v uri="https://cli.github.com/packages" -v arch="${native_arch}" '
+    {
+      line = $0
+      sub(/#.*$/, "", line)
+      if (line !~ /^[ \t]*deb([ \t]|$)/) next
+      key_ok = 0; uri_ok = 0; suite_ok = 0; comp_ok = 0
+      has_set = 0; set_has_native = 0; add_native = 0; rem_native = 0
+      if (match(line, /\[[^]]+\]/)) {
+        opts = substr(line, RSTART + 1, RLENGTH - 2)
+        rest = substr(line, RSTART + RLENGTH)
+        n_opts = split(opts, opt_arr, /[ \t]+/)
+        for (i = 1; i <= n_opts; i++) {
+          if (opt_arr[i] ~ /^signed-by=/) {
+            val = opt_arr[i]
+            sub(/^signed-by=/, "", val)
+            gsub(/^"|"$/, "", val)
+            if (val == key) key_ok = 1
+          } else if (opt_arr[i] ~ /^arch=/) {
+            val = opt_arr[i]
+            sub(/^arch=/, "", val)
+            gsub(/^"|"$/, "", val)
+            has_set = 1
+            set_has_native = 0
+            n_archs = split(val, arch_arr, /,/)
+            for (k = 1; k <= n_archs; k++) {
+              if (arch_arr[k] == arch) set_has_native = 1
+            }
+          } else if (opt_arr[i] ~ /^arch\+=/) {
+            val = opt_arr[i]
+            sub(/^arch\+=/, "", val)
+            gsub(/^"|"$/, "", val)
+            n_archs = split(val, arch_arr, /,/)
+            for (k = 1; k <= n_archs; k++) {
+              if (arch_arr[k] == arch) add_native = 1
+            }
+          } else if (opt_arr[i] ~ /^arch-=/) {
+            val = opt_arr[i]
+            sub(/^arch-=/, "", val)
+            gsub(/^"|"$/, "", val)
+            n_archs = split(val, arch_arr, /,/)
+            for (k = 1; k <= n_archs; k++) {
+              if (arch_arr[k] == arch) rem_native = 1
+            }
+          }
+        }
+      } else {
+        rest = line
+        sub(/^[ \t]*deb[ \t]+/, "", rest)
+      }
+      has_native = (has_set ? set_has_native : 1)
+      if (add_native) has_native = 1
+      if (rem_native) has_native = 0
+      arch_ok = has_native
+      sub(/^[ \t]+/, "", rest)
+      n_rest = split(rest, rest_arr, /[ \t]+/)
+      if (n_rest >= 1) {
+        entry_uri = rest_arr[1]
+        sub(/\/+$/, "", entry_uri)
+        target_uri = uri
+        sub(/\/+$/, "", target_uri)
+        if (entry_uri == target_uri) uri_ok = 1
+      }
+      if (n_rest >= 2 && rest_arr[2] == "stable") suite_ok = 1
+      for (j = 3; j <= n_rest; j++) {
+        if (rest_arr[j] == "main") comp_ok = 1
+      }
+      if (key_ok && uri_ok && suite_ok && comp_ok && arch_ok) {
+        found = 1
+        exit 0
+      }
+    }
+    END { exit !found }
+  ' "${repo_list}" 2>/dev/null
+}
+
+is_official_gh_installed() {
+  local verify_timeout="${CLI_VERIFY_TIMEOUT:-10}"
+  local gh_bin="${GH_BIN:-/usr/bin/gh}"
+
+  # 1. gh パッケージがインストール済みか
+  # shellcheck disable=SC2016
+  [ "$(dpkg-query -W -f='${db:Status-Status}' gh 2>/dev/null)" = installed ] || return 1
+
+  # 2. 公式 apt リポジトリ設定が正常に存在するか
+  is_official_gh_repo_configured || return 1
+
+  # 3. Maintainer が公式 GitHub 由来か（positive validation: メタデータ取得失敗や非公式は拒否）
+  local maintainer
+  maintainer=$(dpkg-query -W -f='${Maintainer}' gh 2>/dev/null) || return 1
+  [ -n "${maintainer}" ] || return 1
+  case "${maintainer}" in
+    *"GitHub"*) ;;
+    *) return 1 ;;
+  esac
+
+  # 4. 管理対象バイナリの実動作確認
+  [ -x "${gh_bin}" ] || return 1
+  timeout -k 2 "${verify_timeout}" "${gh_bin}" --version >/dev/null 2>&1 || return 1
+
+  return 0
+}
+
 all_installed() {
   local package
   for package in "${expected_packages[@]}"; do
+    if [ "${package}" = "gh" ]; then
+      is_official_gh_installed || return 1
+      continue
+    fi
     # shellcheck disable=SC2016
     [ "$(dpkg-query -W -f='${db:Status-Status}' "${package}" 2>/dev/null)" = installed ] || return 1
   done
 }
 
 is_official_gh_available() {
-  [ -f /etc/apt/sources.list.d/github-cli.list ] || return 1
+  local repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
+  [ -f "${repo_list}" ] || return 1
   # 公式リポジトリのインデックスが取得できているか確認する。
   # 取得失敗時に Ubuntu 標準（universe）にある廃止 API を使う古い gh が
   # 誤ってインストールされるのを防ぐため、最新バージョン候補が cli.github.com 由来であることを確認する。
@@ -112,6 +226,12 @@ if ! all_installed; then
     if is_official_docker_available; then
       apt-get install -y "${docker_packages[@]}" || true
     fi
+  fi
+
+  # gh が dpkg 上は installed 判定でもバイナリ破損等で実動作に失敗している場合、
+  # apt が「最新版インストール済み」としてバイナリの再配置をスキップしないよう --reinstall で修復する
+  if is_official_gh_available && ! is_official_gh_installed; then
+    apt-get install --reinstall -y "${github_cli_packages[@]}" || true
   fi
 fi
 
