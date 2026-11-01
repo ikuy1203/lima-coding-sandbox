@@ -212,17 +212,21 @@ if [ "${need_install}" -eq 1 ]; then
   installer=$(mktemp)
   tmp_files+=("${installer}")
   download_file https://mise.run "${installer}"
+  backup_bin=""
   if [ "${broken_existing}" = true ] && { [ -e "${bin}" ] || [ -L "${bin}" ]; }; then
-    mv -f "${bin}" "${bin}.bak"
+    backup_bin=$(mktemp "${bin}.bak.XXXXXX")
+    mv -f "${bin}" "${backup_bin}"
   fi
   if ! { sh "${installer}" && verify_cli "mise" "${bin}"; }; then
-    if [ -e "${bin}.bak" ] || [ -L "${bin}.bak" ]; then
+    if [ -n "${backup_bin}" ] && { [ -e "${backup_bin}" ] || [ -L "${backup_bin}" ]; }; then
       echo >&2 "warning: reinstallation failed; restoring original binary"
-      mv -f "${bin}.bak" "${bin}"
+      mv -f "${backup_bin}" "${bin}"
     fi
     exit 1
   fi
-  rm -f "${bin}.bak"
+  if [ -n "${backup_bin}" ]; then
+    rm -f "${backup_bin}"
+  fi
 fi
 
 marker="# added by lima-coding-sandbox provision/mise.sh"

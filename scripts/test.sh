@@ -333,22 +333,29 @@ EOF
 
   # 1.11 独自設定（user.signingkey が別鍵、または未設定で gpg.format=ssh）が尊重されること
   log_test "${suite}: preserve custom user.signingkey and custom ssh format without template key"
-  local custom_home="${test_dir}/custom_home"
-  mkdir -p "${custom_home}"
-  HOME="${custom_home}" XDG_CONFIG_HOME="${custom_home}/.config" GIT_CONFIG_GLOBAL="${custom_home}/.gitconfig" git config --global user.name "Custom User"
-  HOME="${custom_home}" XDG_CONFIG_HOME="${custom_home}/.config" GIT_CONFIG_GLOBAL="${custom_home}/.gitconfig" git config --global user.email "custom@example.com"
-  HOME="${custom_home}" XDG_CONFIG_HOME="${custom_home}/.config" GIT_CONFIG_GLOBAL="${custom_home}/.gitconfig" git config --global gpg.format ssh
+  local custom_ssh_home="${test_dir}/custom_ssh_home"
+  local custom_ssh_stderr="${test_dir}/custom_ssh.stderr"
+  mkdir -p "${custom_ssh_home}"
+  HOME="${custom_ssh_home}" XDG_CONFIG_HOME="${custom_ssh_home}/.config" GIT_CONFIG_GLOBAL="${custom_ssh_home}/.gitconfig" git config --global user.name "Custom SSH User"
+  HOME="${custom_ssh_home}" XDG_CONFIG_HOME="${custom_ssh_home}/.config" GIT_CONFIG_GLOBAL="${custom_ssh_home}/.gitconfig" git config --global user.email "custom-ssh@example.com"
+  HOME="${custom_ssh_home}" XDG_CONFIG_HOME="${custom_ssh_home}/.config" GIT_CONFIG_GLOBAL="${custom_ssh_home}/.gitconfig" git config --global commit.gpgsign true
+  HOME="${custom_ssh_home}" XDG_CONFIG_HOME="${custom_ssh_home}/.config" GIT_CONFIG_GLOBAL="${custom_ssh_home}/.gitconfig" git config --global gpg.format ssh
   # user.signingkey は未設定（ssh-agent 利用構成などを想定）
 
   local custom_success=0
   (
-    export HOME="${custom_home}"
-    export XDG_CONFIG_HOME="${custom_home}/.config"
-    export GIT_CONFIG_GLOBAL="${custom_home}/.gitconfig"
-    bash "${REPO_ROOT}/provision/git-config.sh" >/dev/null 2>&1
+    export HOME="${custom_ssh_home}"
+    export XDG_CONFIG_HOME="${custom_ssh_home}/.config"
+    export GIT_CONFIG_GLOBAL="${custom_ssh_home}/.gitconfig"
+    bash "${REPO_ROOT}/provision/git-config.sh" >/dev/null 2>"${custom_ssh_stderr}"
   ) && custom_success=1
 
-  if [ "${custom_success}" -eq 1 ]; then
+  local custom_preserved=0
+  if grep -q "Custom Git signing configuration detected" "${custom_ssh_stderr}" 2>/dev/null; then
+    custom_preserved=1
+  fi
+
+  if [ "${custom_success}" -eq 1 ] && [ "${custom_preserved}" -eq 1 ]; then
     log_pass "${suite}: preserve custom user.signingkey and custom ssh format without template key"
   else
     log_fail "${suite}: custom signing configuration was not preserved"
@@ -1339,6 +1346,37 @@ EOF
     log_pass "${suite}: restore existing dangling symlink from backup when installer fails"
   else
     log_fail "${suite}: dangling symlink was not restored when installer failed"
+  fi
+
+  # 3.16 ユーザー既存の .bak ファイルが再インストール時に上書き・削除されず保持されること
+  log_test "${suite}: preserve existing user .bak file during reinstallation"
+  local user_bak_home="${test_dir}/user_bak_home"
+  local user_bak_tmp="${test_dir}/user_bak_tmp"
+  mkdir -p "${user_bak_home}/.local/bin" "${user_bak_tmp}"
+  echo "pre-existing user backup" > "${user_bak_home}/.local/bin/herdr.bak"
+  cat > "${user_bak_home}/.local/bin/herdr" << 'EOF'
+#!/bin/sh
+exit 1
+EOF
+  chmod +x "${user_bak_home}/.local/bin/herdr"
+
+  (
+    export "${test_env[@]}"
+    export HOME="${user_bak_home}"
+    export TMPDIR="${user_bak_tmp}"
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  )
+
+  local user_bak_preserved=0
+  if [ -e "${user_bak_home}/.local/bin/herdr.bak" ] && \
+     [ "$(cat "${user_bak_home}/.local/bin/herdr.bak")" = "pre-existing user backup" ]; then
+    user_bak_preserved=1
+  fi
+
+  if [ "${user_bak_preserved}" -eq 1 ]; then
+    log_pass "${suite}: preserve existing user .bak file during reinstallation"
+  else
+    log_fail "${suite}: user .bak file was overwritten or deleted during reinstallation"
   fi
 }
 
