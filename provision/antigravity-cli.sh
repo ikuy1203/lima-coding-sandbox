@@ -4,6 +4,10 @@
 # 公式手順: https://antigravity.google/docs/cli/install
 # インストール先: ~/.local/bin/agy（本体はバックグラウンドで自動更新される）
 #
+# 公式 install スクリプトはバージョン指定に未対応（オプションは --dir と --help のみ。
+# 導入後もバックグラウンドで自動更新される）。インストーラ自身が Google Cloud Storage
+# から checksums.txt を取得して照合する（checksums.txt が存在しない場合はスキップされる制約がある）。
+#
 # ドキュメントにある --skip-aliases / --skip-path は、現行の install.sh では
 # "Unknown parameter" エラーになるため指定しない。
 #
@@ -29,6 +33,7 @@ trap cleanup EXIT
 verify_cli() {
   local name="$1"
   local bin="$2"
+  local expected_version="${3:-}"
   local verify_timeout="${CLI_VERIFY_TIMEOUT:-10}"
 
   if [ ! -e "${bin}" ] && [ ! -L "${bin}" ]; then
@@ -40,19 +45,47 @@ verify_cli() {
     return 1
   fi
 
+  local ver_out=""
   local rc=0
-  if timeout -k 2 "${verify_timeout}" "${bin}" --version >/dev/null 2>&1; then
-    return 0
+  if ver_out=$(timeout -k 2 "${verify_timeout}" "${bin}" --version 2>&1); then
+    rc=0
   else
     rc=$?
   fi
 
   if [ "${rc}" -eq 124 ]; then
     echo >&2 "error: ${name} verification failed: '${bin} --version' timed out after ${verify_timeout}s"
-  else
+    return 1
+  elif [ "${rc}" -ne 0 ]; then
     echo >&2 "error: ${name} verification failed: '${bin} --version' exited with code ${rc}"
+    return 1
   fi
-  return 1
+
+  if [ -n "${expected_version}" ]; then
+    local target_ver="${expected_version#[vV]}"
+    local match_ok=0
+    if printf '%s\n' "${ver_out}" | awk -v target="${target_ver}" '
+      {
+        for (i = 1; i <= NF; i++) {
+          t = $i
+          sub(/^[([{<"\047]+/, "", t)
+          sub(/[.,;:!?)\]}>"\047]+$/, "", t)
+          sub(/^[vV]/, "", t)
+          if (t == target) { found = 1; exit 0 }
+        }
+      }
+      END { exit !found }
+    '; then
+      match_ok=1
+    fi
+
+    if [ "${match_ok}" -ne 1 ]; then
+      echo >&2 "error: ${name} verification failed: expected version '${expected_version}', but '${bin} --version' reported: ${ver_out}"
+      return 1
+    fi
+  fi
+
+  return 0
 }
 
 bin="${HOME}/.local/bin/agy"
@@ -209,6 +242,7 @@ if [ "${broken_existing}" = true ] && { [ -e "${bin}" ] || [ -L "${bin}" ]; }; t
   mv -f "${bin}" "${backup_bin}"
 fi
 if ! { bash "${installer}" && verify_cli "antigravity-cli" "${bin}"; }; then
+  rm -f "${bin}"
   if [ -n "${backup_bin}" ] && { [ -e "${backup_bin}" ] || [ -L "${backup_bin}" ]; }; then
     echo >&2 "warning: reinstallation failed; restoring original binary"
     mv -f "${backup_bin}" "${bin}"

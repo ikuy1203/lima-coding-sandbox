@@ -2,7 +2,7 @@
 
 本ドキュメントは、`lima-coding-sandbox` の Issue（計 21 件、#6〜#25・#29）について、プロジェクトの目的・セキュリティ・開発効率の観点から評価基準を定め、実装の優先順位とロードマップを整理したものです。
 
-> **最終更新: 2026-11-01** — 完了 12 件 / 未解決 9 件。Phase 1、Phase 2 に続き、**Phase 3**（#13, #24, #25）が進行中です（次は #21）。
+> **最終更新: 2026-11-01** — 完了 13 件 / 未解決 8 件。Phase 1、Phase 2、**Phase 3**（#13, #24, #25, #21）が完了しました（次は Phase 4 の #17）。
 
 ---
 
@@ -14,7 +14,7 @@
 |---|---|:---:|---|
 | Phase 1: Quick Wins & エージェント摩擦解消 | #15, #7, #8, #6, #16, #22 | 6 / 6 | ✅ 完了 |
 | Phase 2: セキュリティ隔離 & 起動高速化 | #10, #9, #18 | 3 / 3 | ✅ 完了 |
-| Phase 3: プロビジョニング堅牢化 & CI 自動テスト | #13, #24, #25, #21 | 3 / 4 | 🔄 進行中（完了: #13, #24, #25） |
+| Phase 3: プロビジョニング堅牢化 & CI 自動テスト | #13, #24, #25, #21 | 4 / 4 | ✅ 完了 |
 | Phase 4: 運用 DX & コードベース保守 | #17, #12, #20, #19, #11 | 0 / 5 | 未着手 |
 | Phase 5: ドキュメント再編 & 実験的機能 | #23, #14, #29 | 0 / 3 | 未着手 |
 
@@ -34,18 +34,20 @@
 | [#13](https://github.com/ikuy1203/lima-coding-sandbox/issues/13) | [CI] GitHub Actions でのプロビジョニングスクリプト実行テストの追加 | [#38](https://github.com/ikuy1203/lima-coding-sandbox/pull/38) | 2026-10-29 | 高速スタブ回帰テストスイート（`scripts/test.sh`）を整備し `scripts/lint.sh` とともにローカルおよび CI で自動実行。GitHub Actions 上で Ubuntu + KVM アクセラレーションによる Lima VM 起動・全 provision & probes 検証、CLI 動作確認、Git 署名検証、VM 再起動による冪等性テストを構築 |
 | [#24](https://github.com/ikuy1203/lima-coding-sandbox/issues/24) | [Provisioning] 外部ダウンロードのタイムアウト・リトライと失敗時の回復を整備する | [#43](https://github.com/ikuy1203/lima-coding-sandbox/pull/43) | 2026-11-01 | 外部インストーラ（herdr, agy, copilot, mise）および apt 鍵（GitHub CLI, Docker Engine）の取得処理にタイムアウト・限定回数リトライ・恒久/一時エラー判別を導入。一時ファイルへのダウンロード完了後にのみ実行・配置し `trap` で確実に消去。スタブ回帰テストスイートを拡張 |
 | [#25](https://github.com/ikuy1203/lima-coding-sandbox/issues/25) | [Provisioning] インストール済み判定と probes を配布元・実動作の確認に強化する | [#44](https://github.com/ikuy1203/lima-coding-sandbox/pull/44) | 2026-11-01 | GitHub CLI の公式 apt リポジトリ配布元・実動作検証、CLI ツール（herdr, agy, copilot, mise）のタイムアウト付き `--version` 実動作確認と破損時再導入、Git 署名鍵整合性と一時リポジトリでの署名・検証診断、および `coding-sandbox.yaml` probes の配布元・実動作・署名検証強化 |
+| [#21](https://github.com/ikuy1203/lima-coding-sandbox/issues/21) | [Provisioning] サードパーティツールのバージョンを param で固定できるようにする | [#45](https://github.com/ikuy1203/lima-coding-sandbox/pull/45) | 2026-11-01 | `copilotVersion`・`miseVersion` パラメータを追加し、公式 install スクリプトによる指定版導入、導入後のバージョン一致検証、暗黙フォールバックの防止、および再起動時の手動更新版維持を実装。Makefile・.env.example・probes・README を整備 |
 
 ### 前回からの変更点
 
-- **#25（インストール済み判定と probes の実動作・配布元検証強化）が完了**:
-  - `github-cli.sh` および `apt-packages.sh` で公式リポジトリ設定の健全性・公式配布元（Maintainer / policy）を検証し、Ubuntu universe 版 gh の誤認スキップを防止。
-  - 各 CLI（herdr, agy, copilot, mise）の `verify_cli` によるタイムアウト付き `--version` 起動確認を導入し、破損バイナリの自動再インストールとインストーラ実行直後の動作確認を整備。
-  - `git-config.sh` で鍵ペア整合性確認、独自設定保持、および一時リポジトリでの署名コミット・検証診断を導入。
-  - `coding-sandbox.yaml` の probes（basic tools, CLI tools, Git 署名）を実動作確認・エラー理由明示に強化。
-  - `scripts/test.sh` に 44 件の新規テストを追加（計 73 件）。
+- **#21（サードパーティツールのバージョンを param で固定できるようにする）が完了**:
+  - `coding-sandbox.yaml` の `param` に `copilotVersion` と `miseVersion` を追加。
+  - `Makefile` および `.env.example` に `COPILOT_VERSION` と `MISE_VERSION` を追加し、入力値正規化・構文検証・`--param` 受け渡しを整備。
+  - `provision/copilot-cli.sh`、`provision/mise.sh` で環境変数 `VERSION` / `MISE_VERSION` を渡してインストールし、`verify_cli` で指定版との完全一致を厳密検証。
+  - 暗黙のフォールバック（指定無視）や存在しないバージョンの指定時に未検証バイナリを削除して安全に失敗させ、既存の正常な手動更新バイナリは維持。
+  - `provision/{herdr,antigravity-cli,copilot-cli,mise}.sh` の `verify_cli` を共通拡張し、各ツールのチェックサム・署名検証の仕様・制約を整理。
+  - `scripts/test.sh` に 12 件の新規テストを追加（計 96 件、全件 PASS）。
 - **後続フェーズへの反映**:
-  - Phase 3 の残る課題は **#21**（サードパーティツールのバージョンを param で固定できるようにする）。
-  - 次の着手推奨は **#21**。
+  - **Phase 3 の全課題（#13, #24, #25, #21）が完了**。
+  - 次の着手推奨は **Phase 4 の #17**（Makefile のシェル処理を scripts/ に移して shellcheck の対象にする）。
 
 ---
 
@@ -74,7 +76,6 @@
 | **P3** | [#13](https://github.com/ikuy1203/lima-coding-sandbox/issues/13) | [CI] GitHub Actions でのプロビジョニングスクリプト実行テストの追加 | CI | **高** | **中〜高** | プロビジョニング改修（#24, #25, #21）のデグレを防ぐための自動テスト基盤。CI 上で構文だけでなく実行可能性を保証。#16 の週次 schedule 実行と組み合わせると上流の破壊も検知できる。 |
 | **P3** | [#24](https://github.com/ikuy1203/lima-coding-sandbox/issues/24) | [Provisioning] 外部ダウンロードのタイムアウト・リトライと失敗時の回復を整備する | Provisioning | **高** | **中** | 初回プロビジョニング時の一時的ネットワーク障害による破損スクリプト実行・途中終了を防止。#9 で `docker-engine.sh` の鍵取得は一時ファイル化されたため、残る `curl ... \| sh` スクリプトの一時ファイル取得、タイムアウト・リトライ、および `trap` による確実な後始末を整備する。 |
 | **P3** | [#25](https://github.com/ikuy1203/lima-coding-sandbox/issues/25) | [Provisioning] インストール済み判定と probes を配布元・実動作の確認に強化する | Provisioning | **高** | **中** | #9 で `github-cli.sh` の設定ファイル判定と `apt-packages.sh` の公式候補確認が導入された。これに加え、既存環境の配布元整合性や、CLI のファイル存在確認（`-x`）にとどまらない `--version` 実動作確認、Git 署名設定の診断を強化し、破損・誤判定を防止する。 |
-| **P3** | [#21](https://github.com/ikuy1203/lima-coding-sandbox/issues/21) | [Provisioning] サードパーティツールのバージョンを param で固定できるようにする | Provisioning | **中〜高** | **中** | Copilot CLI や mise 等の上流更新による突然の破壊を防ぎ、再現可能なサンドボックス環境を実現。 |
 | **P4** | [#17](https://github.com/ikuy1203/lima-coding-sandbox/issues/17) | [CI] Makefile のシェル処理を scripts/ に移して shellcheck の対象にする | CI / Maintenance | **中** | **低〜中** | Makefile（228 行）内の複雑なインラインスクリプト（#15 のマウント検出、#22 の terminfo、#10 の `forward`・`BLOCK_HOST_LOOPBACK` 検証など）を `scripts/` に切り出し、shellcheck で自動検査。#12, #20, #29 の前提。 |
 | **P4** | [#12](https://github.com/ikuy1203/lima-coding-sandbox/issues/12) | [DX] VM 再作成（make recreate）時の認証情報・署名鍵バックアップ支援 | DX | **中〜高** | **中** | `make recreate` のたびに認証セッションや Git コミット署名鍵が消える心理的ハードルを解消。 |
 | **P4** | [#20](https://github.com/ikuy1203/lima-coding-sandbox/issues/20) | [DX] Git の署名鍵の GitHub への登録・削除をホストの gh で支援する | DX | **中** | **中** | ホスト側の `gh` を利用して署名鍵の登録・削除を支援。鍵コメントに作成日・インスタンス名を含めて識別性を向上。 |
@@ -107,11 +108,11 @@ flowchart TD
         I18["#18 エージェント指示ファイル配置 ✅"]
     end
 
-    subgraph Phase3["Phase 3: プロビジョニング堅牢化 & CI 自動テスト"]
+    subgraph Phase3["Phase 3: プロビジョニング堅牢化 & CI 自動テスト (完了)"]
         I13["#13 CI でのスクリプト実行テスト ✅"]
         I24["#24 外部DLタイムアウト・リトライ ✅"]
-        I25["#25 インストール実動作確認"]
-        I21["#21 param によるバージョン固定"]
+        I25["#25 インストール実動作確認 ✅"]
+        I21["#21 param によるバージョン固定 ✅"]
     end
 
     subgraph Phase4["Phase 4: 運用 DX & コードベース保守"]
@@ -144,8 +145,8 @@ flowchart TD
 
     classDef done fill:#d4edda,stroke:#28a745,color:#155724
     classDef next fill:#fff3cd,stroke:#ffc107,color:#856404
-    class I15,I7,I8,I6,I16,I22,I10,I9,I18,I13,I24,I25 done
-    class I21 next
+    class I15,I7,I8,I6,I16,I22,I10,I9,I18,I13,I24,I25,I21 done
+    class I17 next
 ```
 
 ### Phase 1: Quick Wins & エージェント摩擦解消（即効性） — ✅ 完了（2026-10-11）
@@ -165,13 +166,13 @@ flowchart TD
   - ✅ **#9 [Provisioning]**: サードパーティリポジトリ登録を先行させ、`provision/apt-packages.sh` で `apt-get update` とパッケージ導入を 1 回に集約。probe のコマンド・バイナリ判定を一括確認方式へリファクタリング（PR #34）
   - ✅ **#18 [Agent DX]**: Phase 1（fd, docker, mise）および #10（自動ポート転送の無効化・ホストループバック遮断）で確定した仕様を踏まえ、必要な VM 前提をまとめた指示ファイルを provision で配置。docker ラッパーの制約（環境変数・`HOME` が引き継がれない）や手動ポート転送（`make forward`）の案内を含める。既定は配置しない（`agentInstructions: "false"`）オプトイン方式
 
-### Phase 3: プロビジョニング堅牢化 & CI 自動検証（安定性）
+### Phase 3: プロビジョニング堅牢化 & CI 自動検証（安定性） — ✅ 完了（2026-11-01）
 - **目的**: ネットワーク障害や上流ツールの破壊的変更に強い再現可能な環境を作る。
 - **対象**:
   - ✅ **#13 [CI]**: GitHub Actions 上でプロビジョニングスクリプトを実行するテストジョブおよびローカル回帰テストスイートを追加（PR #38）
   - ✅ **#24 [Provisioning]**: 外部インストーラおよび apt 鍵の取得処理にタイムアウト・限定回数のリトライ・恒久/一時エラー判別を導入し、一時ファイルへのダウンロード完了後にのみ実行・配置する堅牢化と trap 後始末
   - ✅ **#25 [Provisioning]**: probe および provision スクリプトでの `--version` 起動確認・公式リポジトリ確認・Git 署名設定の診断強化
-  - **#21 [Provisioning]**: `coding-sandbox.yaml` の `param` や `.env` からツールバージョンを指定可能にする
+  - ✅ **#21 [Provisioning]**: `coding-sandbox.yaml` の `param`（`copilotVersion`, `miseVersion`）や `.env` からツールバージョンを指定可能にし、完全一致検証と暗黙フォールバック拒否を実装
 
 ### Phase 4: 運用 DX & コードベース保守（利便性）
 - **目的**: 開発者が日常的に VM を破棄・再作成しやすくし、Makefile のメンテナンス性を高める。

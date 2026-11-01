@@ -3,7 +3,15 @@
 #
 # 公式手順: https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli
 # install スクリプト方式を使う（npm 方式とは異なり Node.js が不要）。
-# root 以外で実行すると、インストール先は ~/.local/bin/copilot になる。
+# root 以外で実行すると、インストール先は ~/.local/bin/copilot になる（以後の更新は `copilot update`）。
+#
+# バージョン固定（param.copilotVersion / .env の COPILOT_VERSION）:
+# 公式 install スクリプトは環境変数 VERSION（例: 1.0.91、prerelease）を読み、
+# GitHub Releases から該当版のアーカイブと SHA256SUMS.txt を取得して SHA-256 検証を行う。
+# （空または latest のときは最新安定版を入れる。prerelease も指定可能）。
+# 指定したバージョンが効くのは初回インストール時のみで、以後の更新は手動更新に任せる。
+# なお、公式 install スクリプトは SHA256SUMS.txt の取得に失敗した場合は警告なしで検証をスキップする
+# 制約（fail-open）があるため、本スクリプトでは導入後に verify_cli で指定版の一致と実動作を厳格に確認する。
 #
 # 公式手順では `curl -fsSL https://gh.io/copilot-install | bash` と案内されているが、
 # 本スクリプトでは一時ファイルへのダウンロード完了後に実行し、途中失敗時の不完全な実行を防ぐ。
@@ -11,6 +19,22 @@
 # なお、外側のタイムアウト・リトライ設定は install スクリプト内部で行われる本体アーカイブのダウンロードには引き継がれない
 # （内部のタイムアウト・リトライや後始末は上流ツールの実装に依存する）。
 set -eux -o pipefail
+
+copilot_ver="${PARAM_copilotVersion:-}"
+case "${copilot_ver}" in
+  ""|latest)
+    copilot_ver=""
+    ;;
+  prerelease)
+    ;;
+  *)
+    if ! printf '%s\n' "${copilot_ver}" | grep -Eq '^[vV]?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z._-]+)?$'; then
+      echo >&2 "error: param copilotVersion is invalid: '${copilot_ver}' (expected semver or 'prerelease')"
+      exit 1
+    fi
+    copilot_ver="${copilot_ver#[vV]}"
+    ;;
+esac
 
 tmp_files=()
 cleanup() {
@@ -23,6 +47,7 @@ trap cleanup EXIT
 verify_cli() {
   local name="$1"
   local bin="$2"
+  local expected_version="${3:-}"
   local verify_timeout="${CLI_VERIFY_TIMEOUT:-10}"
 
   if [ ! -e "${bin}" ] && [ ! -L "${bin}" ]; then
@@ -34,19 +59,47 @@ verify_cli() {
     return 1
   fi
 
+  local ver_out=""
   local rc=0
-  if timeout -k 2 "${verify_timeout}" "${bin}" --version >/dev/null 2>&1; then
-    return 0
+  if ver_out=$(timeout -k 2 "${verify_timeout}" "${bin}" --version 2>&1); then
+    rc=0
   else
     rc=$?
   fi
 
   if [ "${rc}" -eq 124 ]; then
     echo >&2 "error: ${name} verification failed: '${bin} --version' timed out after ${verify_timeout}s"
-  else
+    return 1
+  elif [ "${rc}" -ne 0 ]; then
     echo >&2 "error: ${name} verification failed: '${bin} --version' exited with code ${rc}"
+    return 1
   fi
-  return 1
+
+  if [ -n "${expected_version}" ]; then
+    local target_ver="${expected_version#[vV]}"
+    local match_ok=0
+    if printf '%s\n' "${ver_out}" | awk -v target="${target_ver}" '
+      {
+        for (i = 1; i <= NF; i++) {
+          t = $i
+          sub(/^[([{<"\047]+/, "", t)
+          sub(/[.,;:!?)\]}>"\047]+$/, "", t)
+          sub(/^[vV]/, "", t)
+          if (t == target) { found = 1; exit 0 }
+        }
+      }
+      END { exit !found }
+    '; then
+      match_ok=1
+    fi
+
+    if [ "${match_ok}" -ne 1 ]; then
+      echo >&2 "error: ${name} verification failed: expected version '${expected_version}', but '${bin} --version' reported: ${ver_out}"
+      return 1
+    fi
+  fi
+
+  return 0
 }
 
 bin="${HOME}/.local/bin/copilot"
@@ -197,12 +250,54 @@ download_file() {
 installer=$(mktemp)
 tmp_files+=("${installer}")
 download_file https://gh.io/copilot-install "${installer}"
+
+expected_ver=""
+installer_log=$(mktemp)
+tmp_files+=("${installer_log}")
+
+run_installer() {
+  local rc=0
+  if [ "${copilot_ver}" = "prerelease" ]; then
+    local installer_out
+    if installer_out=$(VERSION="prerelease" bash "${installer}" 2>&1); then
+      rc=0
+    else
+      rc=$?
+    fi
+    printf '%s\n' "${installer_out}" > "${installer_log}"
+    if [ "${rc}" -ne 0 ]; then
+      echo >&2 "error: copilot prerelease installer failed with exit code ${rc}"
+      return "${rc}"
+    fi
+    local tag
+    tag=$(awk '/Latest prerelease version:[[:space:]]*/ { print $NF }' "${installer_log}" | tail -n 1)
+    if [ -z "${tag}" ]; then
+      echo >&2 "error: failed to determine resolved prerelease version from installer output"
+      return 1
+    fi
+    expected_ver="${tag}"
+  elif [ -n "${copilot_ver}" ]; then
+    if VERSION="${copilot_ver}" bash "${installer}"; then
+      expected_ver="${copilot_ver}"
+    else
+      return $?
+    fi
+  else
+    if VERSION="" bash "${installer}"; then
+      expected_ver=""
+    else
+      return $?
+    fi
+  fi
+}
+
 backup_bin=""
 if [ "${broken_existing}" = true ] && { [ -e "${bin}" ] || [ -L "${bin}" ]; }; then
   backup_bin=$(mktemp "${bin}.bak.XXXXXX")
   mv -f "${bin}" "${backup_bin}"
 fi
-if ! { bash "${installer}" && verify_cli "copilot" "${bin}"; }; then
+if ! { run_installer && verify_cli "copilot" "${bin}" "${expected_ver}"; }; then
+  rm -f "${bin}"
   if [ -n "${backup_bin}" ] && { [ -e "${backup_bin}" ] || [ -L "${backup_bin}" ]; }; then
     echo >&2 "warning: reinstallation failed; restoring original binary"
     mv -f "${backup_bin}" "${bin}"
