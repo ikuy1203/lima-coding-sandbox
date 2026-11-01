@@ -2096,6 +2096,68 @@ EOF
   else
     log_fail "${suite}: docker-engine failed to reconfigure deb822 sources on Architectures-Remove"
   fi
+
+  # 5.10 docker-engine.sh: Architectures: の後に継続行で arm64 が指定された場合、再設定すること
+  log_test "${suite}: docker-engine folds Deb822 continuation lines and reconfigures when native arch excluded"
+  cat > "${deb822_src}" << EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: noble
+Components: stable
+Architectures:
+  arm64
+Signed-By: ${deb822_key}
+EOF
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${deb822_tmp}"
+    export DOCKER_KEYRING="${deb822_key}"
+    export DOCKER_SOURCES="${deb822_src}"
+    export DOCKER_WRAPPER="${deb822_dir}/docker"
+    bash "${REPO_ROOT}/provision/docker-engine.sh" >/dev/null 2>&1
+  )
+
+  local deb822_continuation_reconfigured=0
+  if grep -Eq "^Architectures:[[:space:]]+amd64" "${deb822_src}" 2>/dev/null; then
+    deb822_continuation_reconfigured=1
+  fi
+
+  if [ "${deb822_continuation_reconfigured}" -eq 1 ]; then
+    log_pass "${suite}: docker-engine folds Deb822 continuation lines and reconfigures when native arch excluded"
+  else
+    log_fail "${suite}: docker-engine failed to reconfigure deb822 sources with indented non-native arch"
+  fi
+
+  # 5.11 docker-engine.sh: Architectures: arm64 の後に継続行で amd64 が指定された場合、受理されること
+  log_test "${suite}: docker-engine folds Deb822 continuation lines and accepts when native arch included"
+  cat > "${deb822_src}" << EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: noble
+Components: stable
+Architectures: arm64
+  amd64
+Signed-By: ${deb822_key}
+EOF
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${deb822_tmp}"
+    export DOCKER_KEYRING="${deb822_key}"
+    export DOCKER_SOURCES="${deb822_src}"
+    export DOCKER_WRAPPER="${deb822_dir}/docker"
+    bash "${REPO_ROOT}/provision/docker-engine.sh" >/dev/null 2>&1
+  )
+
+  local deb822_continuation_accepted=0
+  if grep -q "arm64" "${deb822_src}" 2>/dev/null && grep -q "amd64" "${deb822_src}" 2>/dev/null; then
+    deb822_continuation_accepted=1
+  fi
+
+  if [ "${deb822_continuation_accepted}" -eq 1 ]; then
+    log_pass "${suite}: docker-engine folds Deb822 continuation lines and accepts when native arch included"
+  else
+    log_fail "${suite}: docker-engine failed to accept deb822 sources with folded native arch"
+  fi
 }
 
 # -----------------------------------------------------------------------------
