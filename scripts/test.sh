@@ -809,22 +809,71 @@ INS
       ;;
     *gh.io/copilot-install*)
       cat << 'INS' > "${dest}"
+#!/bin/bash
+if [ "${STUB_COPILOT_INSTALL_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
+case "${VERSION:-}" in
+  ""|prerelease)
+    ;;
+  [vV]*)
+    echo >&2 "stub-error: upstream copilot installer received unnormalized VERSION: ${VERSION}"
+    exit 99
+    ;;
+esac
 mkdir -p "$HOME/.local/bin"
-cat << 'BIN' > "$HOME/.local/bin/copilot"
+resolved_ver="${VERSION:-1.0.105}"
+if [ "${STUB_COPILOT_IGNORE_VERSION:-0}" = "1" ]; then
+  resolved_ver="1.0.105"
+fi
+if [ "${VERSION:-}" = "prerelease" ]; then
+  if [ "${STUB_COPILOT_NO_PRERELEASE_TAG:-0}" = "1" ]; then
+    :
+  else
+    echo "Latest prerelease version: v1.1.0-alpha.1"
+  fi
+  resolved_ver="1.1.0-alpha.1"
+  if [ "${STUB_COPILOT_FAIL_AFTER_PRERELEASE_TAG:-0}" = "1" ]; then
+    exit 43
+  fi
+fi
+cat << BIN > "$HOME/.local/bin/copilot"
 #!/bin/sh
-echo "copilot stub 0.1.0"
+echo "GitHub Copilot CLI ${resolved_ver}."
 BIN
 chmod +x "$HOME/.local/bin/copilot"
+if [ "${STUB_COPILOT_FAIL_AFTER_INSTALL:-0}" = "1" ]; then
+  exit 42
+fi
 INS
       ;;
     *mise.run*)
       cat << 'INS' > "${dest}"
+#!/bin/bash
+if [ "${STUB_MISE_INSTALL_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
+case "${MISE_VERSION:-}" in
+  "")
+    ;;
+  [vV]*)
+    echo >&2 "stub-error: upstream mise installer received unnormalized MISE_VERSION: ${MISE_VERSION}"
+    exit 99
+    ;;
+esac
 mkdir -p "$HOME/.local/bin"
-cat << 'BIN' > "$HOME/.local/bin/mise"
+resolved_ver="${MISE_VERSION:-2026.10.25}"
+if [ "${STUB_MISE_IGNORE_VERSION:-0}" = "1" ]; then
+  resolved_ver="2026.10.25"
+fi
+cat << BIN > "$HOME/.local/bin/mise"
 #!/bin/sh
-echo "mise stub 0.1.0"
+echo "${resolved_ver} linux-x64 (2026-10-31)"
 BIN
 chmod +x "$HOME/.local/bin/mise"
+if [ "${STUB_MISE_FAIL_AFTER_INSTALL:-0}" = "1" ]; then
+  exit 42
+fi
 INS
       ;;
     *)
@@ -1378,6 +1427,371 @@ EOF
   else
     log_fail "${suite}: user .bak file was overwritten or deleted during reinstallation"
   fi
+
+  # 3.17 copilot-cli.sh: バージョン指定（semver、v/Vプレフィックス有無）での導入と検証
+  log_test "${suite}: copilot-cli installs specified version (with/without v prefix)"
+  local ver_home="${test_dir}/ver_home"
+  local ver_tmp="${test_dir}/ver_tmp"
+  mkdir -p "${ver_home}" "${ver_tmp}"
+  local ver_success=0
+  (
+    export "${test_env[@]}"
+    export HOME="${ver_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_copilotVersion="1.0.91"
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+  ) && ver_success=1
+
+  local bin_ver=""
+  if [ -x "${ver_home}/.local/bin/copilot" ]; then
+    bin_ver=$("${ver_home}/.local/bin/copilot" --version 2>&1 || true)
+  fi
+
+  local v_prefix_success=0
+  local v_prefix_home="${test_dir}/v_prefix_home"
+  mkdir -p "${v_prefix_home}"
+  (
+    export "${test_env[@]}"
+    export HOME="${v_prefix_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_copilotVersion="v1.0.91"
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+  ) && v_prefix_success=1
+
+  local cap_v_prefix_success=0
+  local cap_v_prefix_home="${test_dir}/cap_v_prefix_home"
+  mkdir -p "${cap_v_prefix_home}"
+  (
+    export "${test_env[@]}"
+    export HOME="${cap_v_prefix_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_copilotVersion="V1.0.91"
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+  ) && cap_v_prefix_success=1
+
+  if [ "${ver_success}" -eq 1 ] && [ "${v_prefix_success}" -eq 1 ] && [ "${cap_v_prefix_success}" -eq 1 ] && \
+     printf '%s\n' "${bin_ver}" | grep -q "1.0.91"; then
+    log_pass "${suite}: copilot-cli installs specified version (with/without v prefix)"
+  else
+    log_fail "${suite}: copilot-cli failed to install or verify specified version (ver=${ver_success}, v=${v_prefix_success}, V=${cap_v_prefix_success})"
+  fi
+
+  # 3.18 copilot-cli.sh: prerelease 指定での導入とタグ解決確認
+  log_test "${suite}: copilot-cli installs prerelease version and verifies resolved tag"
+  local pre_home="${test_dir}/pre_home"
+  mkdir -p "${pre_home}"
+  local pre_success=0
+  (
+    export "${test_env[@]}"
+    export HOME="${pre_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_copilotVersion="prerelease"
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+  ) && pre_success=1
+
+  local pre_no_tag_failed=0
+  local pre_no_tag_home="${test_dir}/pre_no_tag_home"
+  mkdir -p "${pre_no_tag_home}"
+  (
+    export "${test_env[@]}"
+    export HOME="${pre_no_tag_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_copilotVersion="prerelease"
+    export STUB_COPILOT_NO_PRERELEASE_TAG=1
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+  ) || pre_no_tag_failed=1
+
+  if [ "${pre_success}" -eq 1 ] && [ "${pre_no_tag_failed}" -eq 1 ] && \
+     [ -x "${pre_home}/.local/bin/copilot" ] && ! [ -e "${pre_no_tag_home}/.local/bin/copilot" ]; then
+    log_pass "${suite}: copilot-cli installs prerelease version and verifies resolved tag"
+  else
+    log_fail "${suite}: copilot-cli prerelease installation or fallback handling failed"
+  fi
+
+  # 3.19 mise.sh: バージョン指定（semver、v/Vプレフィックス有無、latest正規化）での導入と検証
+  log_test "${suite}: mise installs specified version and normalizes latest"
+  local mise_ver_home="${test_dir}/mise_ver_home"
+  mkdir -p "${mise_ver_home}"
+  local mise_ver_success=0
+  (
+    export "${test_env[@]}"
+    export HOME="${mise_ver_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_miseVersion="2026.10.7"
+    bash "${REPO_ROOT}/provision/mise.sh" >/dev/null 2>&1
+  ) && mise_ver_success=1
+
+  local mise_v_home="${test_dir}/mise_v_home"
+  mkdir -p "${mise_v_home}"
+  local mise_v_success=0
+  (
+    export "${test_env[@]}"
+    export HOME="${mise_v_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_miseVersion="v2026.10.7"
+    bash "${REPO_ROOT}/provision/mise.sh" >/dev/null 2>&1
+  ) && mise_v_success=1
+
+  local mise_cap_v_home="${test_dir}/mise_cap_v_home"
+  mkdir -p "${mise_cap_v_home}"
+  local mise_cap_v_success=0
+  (
+    export "${test_env[@]}"
+    export HOME="${mise_cap_v_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_miseVersion="V2026.10.7"
+    bash "${REPO_ROOT}/provision/mise.sh" >/dev/null 2>&1
+  ) && mise_cap_v_success=1
+
+  local mise_latest_home="${test_dir}/mise_latest_home"
+  mkdir -p "${mise_latest_home}"
+  local mise_latest_success=0
+  (
+    export "${test_env[@]}"
+    export HOME="${mise_latest_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_miseVersion="latest"
+    bash "${REPO_ROOT}/provision/mise.sh" >/dev/null 2>&1
+  ) && mise_latest_success=1
+
+  if [ "${mise_ver_success}" -eq 1 ] && [ "${mise_v_success}" -eq 1 ] && [ "${mise_cap_v_success}" -eq 1 ] && [ "${mise_latest_success}" -eq 1 ] && \
+     grep -q "2026.10.7" <("${mise_ver_home}/.local/bin/mise" --version) && \
+     grep -q "2026.10.7" <("${mise_cap_v_home}/.local/bin/mise" --version) && \
+     grep -q "2026.10.25" <("${mise_latest_home}/.local/bin/mise" --version); then
+    log_pass "${suite}: mise installs specified version and normalizes latest"
+  else
+    log_fail "${suite}: mise specified version installation or latest normalization failed"
+  fi
+
+  # 3.20 暗黙フォールバック（インストーラが指定版を無視して別版を導入）の拒否と未検証バイナリ消去
+  log_test "${suite}: reject implicit fallback when installer ignores version"
+  local fallback_home="${test_dir}/fallback_home"
+  mkdir -p "${fallback_home}"
+  local fallback_failed=0
+  (
+    export "${test_env[@]}"
+    export HOME="${fallback_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_copilotVersion="1.0.91"
+    export STUB_COPILOT_IGNORE_VERSION=1
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+  ) || fallback_failed=1
+
+  local mise_fallback_home="${test_dir}/mise_fallback_home"
+  mkdir -p "${mise_fallback_home}"
+  local mise_fallback_failed=0
+  (
+    export "${test_env[@]}"
+    export HOME="${mise_fallback_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_miseVersion="2026.10.7"
+    export STUB_MISE_IGNORE_VERSION=1
+    bash "${REPO_ROOT}/provision/mise.sh" >/dev/null 2>&1
+  ) || mise_fallback_failed=1
+
+  # 破損バイナリからの再インストール時に暗黙フォールバックが発生した場合、元バイナリが復元されること
+  local restore_fallback_home="${test_dir}/restore_fallback_home"
+  mkdir -p "${restore_fallback_home}/.local/bin"
+  echo "original broken binary" > "${restore_fallback_home}/.local/bin/copilot"
+  chmod +x "${restore_fallback_home}/.local/bin/copilot"
+  local restore_fallback_failed=0
+  (
+    export "${test_env[@]}"
+    export HOME="${restore_fallback_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_copilotVersion="1.0.91"
+    export STUB_COPILOT_IGNORE_VERSION=1
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+  ) || restore_fallback_failed=1
+
+  local restored_content=""
+  if [ -e "${restore_fallback_home}/.local/bin/copilot" ]; then
+    restored_content=$(cat "${restore_fallback_home}/.local/bin/copilot")
+  fi
+
+  if [ "${fallback_failed}" -eq 1 ] && ! [ -e "${fallback_home}/.local/bin/copilot" ] && \
+     [ "${mise_fallback_failed}" -eq 1 ] && ! [ -e "${mise_fallback_home}/.local/bin/mise" ] && \
+     [ "${restore_fallback_failed}" -eq 1 ] && [ "${restored_content}" = "original broken binary" ]; then
+    log_pass "${suite}: reject implicit fallback when installer ignores version"
+  else
+    log_fail "${suite}: implicit fallback was not rejected or binary cleanup/restore failed"
+  fi
+
+  # 3.21 存在しないバージョン指定等でインストーラが非ゼロ終了した場合の失敗とバイナリ不残存
+  log_test "${suite}: clean failure when installer fails on invalid/nonexistent version"
+  local inst_fail_home="${test_dir}/inst_fail_home"
+  mkdir -p "${inst_fail_home}"
+  local copilot_fail=0 mise_fail=0
+  (
+    export "${test_env[@]}"
+    export HOME="${inst_fail_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_copilotVersion="999.999.999"
+    export STUB_COPILOT_INSTALL_FAIL=1
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+  ) || copilot_fail=1
+
+  (
+    export "${test_env[@]}"
+    export HOME="${inst_fail_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_miseVersion="999.999.999"
+    export STUB_MISE_INSTALL_FAIL=1
+    bash "${REPO_ROOT}/provision/mise.sh" >/dev/null 2>&1
+  ) || mise_fail=1
+
+  if [ "${copilot_fail}" -eq 1 ] && [ "${mise_fail}" -eq 1 ] && \
+     ! [ -e "${inst_fail_home}/.local/bin/copilot" ] && ! [ -e "${inst_fail_home}/.local/bin/mise" ]; then
+    log_pass "${suite}: clean failure when installer fails on invalid/nonexistent version"
+  else
+    log_fail "${suite}: failed installer left residual binary or did not fail"
+  fi
+
+  # 3.22 不正なパラメータ形式の即時拒否（ダウンロード前の早期失敗）
+  log_test "${suite}: immediate rejection on invalid parameter format"
+  local invalid_param_home="${test_dir}/invalid_param_home"
+  mkdir -p "${invalid_param_home}"
+  local bad_copilot_failed=0 bad_mise_failed=0
+  (
+    export "${test_env[@]}"
+    export HOME="${invalid_param_home}"
+    export PARAM_copilotVersion="invalid version string!"
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+  ) || bad_copilot_failed=1
+
+  (
+    export "${test_env[@]}"
+    export HOME="${invalid_param_home}"
+    export PARAM_miseVersion="prerelease"
+    bash "${REPO_ROOT}/provision/mise.sh" >/dev/null 2>&1
+  ) || bad_mise_failed=1
+
+  if [ "${bad_copilot_failed}" -eq 1 ] && [ "${bad_mise_failed}" -eq 1 ]; then
+    log_pass "${suite}: immediate rejection on invalid parameter format"
+  else
+    log_fail "${suite}: invalid parameter format was not rejected"
+  fi
+
+  # 3.23 インストール時固定の維持: 正常な既存バイナリがある場合は再インストールを行わない
+  log_test "${suite}: preserve existing healthy binary across runs without reinstall"
+  local keep_exist_home="${test_dir}/keep_exist_home"
+  mkdir -p "${keep_exist_home}/.local/bin"
+  cat > "${keep_exist_home}/.local/bin/copilot" << 'EOF'
+#!/bin/sh
+echo "GitHub Copilot CLI 1.0.105."
+EOF
+  chmod +x "${keep_exist_home}/.local/bin/copilot"
+
+  cat > "${keep_exist_home}/.local/bin/mise" << 'EOF'
+#!/bin/sh
+echo "2026.10.25 linux-x64 (2026-10-31)"
+EOF
+  chmod +x "${keep_exist_home}/.local/bin/mise"
+
+  : > "${curl_log}"
+  (
+    export "${test_env[@]}"
+    export HOME="${keep_exist_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_copilotVersion="1.0.91"
+    export PARAM_miseVersion="2026.10.7"
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+    bash "${REPO_ROOT}/provision/mise.sh" >/dev/null 2>&1
+  )
+
+  local curl_calls_keep
+  curl_calls_keep=$(wc -l < "${curl_log}" | tr -d ' ')
+
+  if [ "${curl_calls_keep}" -eq 0 ] && \
+     grep -q "1.0.105" <("${keep_exist_home}/.local/bin/copilot" --version) && \
+     grep -q "2026.10.25" <("${keep_exist_home}/.local/bin/mise" --version); then
+    log_pass "${suite}: preserve existing healthy binary across runs without reinstall"
+  else
+    log_fail "${suite}: existing healthy binary was reinstalled or overwritten"
+  fi
+
+  # 3.24 インストーラがバイナリ配置後やタグ出力後に非ゼロ終了した場合の失敗検知（終了コード握り潰し防止）
+  log_test "${suite}: reject installer failure even after binary placement or prerelease tag"
+  local post_fail_home="${test_dir}/post_fail_home"
+  mkdir -p "${post_fail_home}"
+  local post_copilot_failed=0 post_pre_failed=0 post_mise_failed=0
+
+  (
+    export "${test_env[@]}"
+    export HOME="${post_fail_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_copilotVersion="1.0.91"
+    export STUB_COPILOT_FAIL_AFTER_INSTALL=1
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+  ) || post_copilot_failed=1
+
+  (
+    export "${test_env[@]}"
+    export HOME="${post_fail_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_copilotVersion="prerelease"
+    export STUB_COPILOT_FAIL_AFTER_PRERELEASE_TAG=1
+    bash "${REPO_ROOT}/provision/copilot-cli.sh" >/dev/null 2>&1
+  ) || post_pre_failed=1
+
+  (
+    export "${test_env[@]}"
+    export HOME="${post_fail_home}"
+    export TMPDIR="${ver_tmp}"
+    export PARAM_miseVersion="2026.10.7"
+    export STUB_MISE_FAIL_AFTER_INSTALL=1
+    bash "${REPO_ROOT}/provision/mise.sh" >/dev/null 2>&1
+  ) || post_mise_failed=1
+
+  if [ "${post_copilot_failed}" -eq 1 ] && ! [ -e "${post_fail_home}/.local/bin/copilot" ] && \
+     [ "${post_pre_failed}" -eq 1 ] && ! [ -e "${post_fail_home}/.local/bin/copilot" ] && \
+     [ "${post_mise_failed}" -eq 1 ] && ! [ -e "${post_fail_home}/.local/bin/mise" ]; then
+    log_pass "${suite}: reject installer failure even after binary placement or prerelease tag"
+  else
+    log_fail "${suite}: installer failure was swallowed or residual binary was left uncleaned"
+  fi
+
+  # 3.25 verify_cli の厳格な完全一致: 部分一致（1.0.910 や 1.0.91-alpha）の誤認防止
+  log_test "${suite}: verify_cli rejects partial version match (1.0.91 vs 1.0.910 or 1.0.91-alpha)"
+  local partial_home="${test_dir}/partial_home"
+  mkdir -p "${partial_home}/.local/bin"
+  local partial_num_failed=0 partial_suffix_failed=0
+
+  cat > "${partial_home}/.local/bin/copilot" << 'EOF'
+#!/bin/sh
+echo "GitHub Copilot CLI 1.0.910."
+EOF
+  chmod +x "${partial_home}/.local/bin/copilot"
+
+  local verify_fn
+  verify_fn=$(awk '/^verify_cli\(\)/,/^}$/{print}' "${REPO_ROOT}/provision/copilot-cli.sh")
+  (
+    eval "${verify_fn}"
+    if ! verify_cli "copilot" "${partial_home}/.local/bin/copilot" "1.0.91" >/dev/null 2>&1; then
+      exit 0
+    fi
+    exit 1
+  ) && partial_num_failed=1
+
+  cat > "${partial_home}/.local/bin/copilot" << 'EOF'
+#!/bin/sh
+echo "GitHub Copilot CLI 1.0.91-alpha."
+EOF
+  chmod +x "${partial_home}/.local/bin/copilot"
+
+  (
+    eval "${verify_fn}"
+    if ! verify_cli "copilot" "${partial_home}/.local/bin/copilot" "1.0.91" >/dev/null 2>&1; then
+      exit 0
+    fi
+    exit 1
+  ) && partial_suffix_failed=1
+
+  if [ "${partial_num_failed}" -eq 1 ] && [ "${partial_suffix_failed}" -eq 1 ]; then
+    log_pass "${suite}: verify_cli rejects partial version match (1.0.91 vs 1.0.910 or 1.0.91-alpha)"
+  else
+    log_fail "${suite}: verify_cli incorrectly accepted partial version match"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -1601,6 +2015,74 @@ EOF
     log_pass "${suite}: make start detects mount and stops on start failure"
   else
     log_fail "${suite}: failure handling or stop call failed"
+  fi
+
+  # 4.6 COPILOT_VERSION と MISE_VERSION の優先順位、正規化、および --param 受け渡し
+  log_test "${suite}: CLI version precedence, normalization, and --param passing"
+  local ver_env="${test_dir}/ver.env"
+  cat > "${ver_env}" << 'EOF'
+COPILOT_VERSION="1.0.90"
+MISE_VERSION=' 2026.10.6 '
+EOF
+
+  : > "${lima_log}"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" create ENV_FILE="${ver_env}" COPILOT_VERSION=' "1.0.91" ' >/dev/null 2>&1
+  )
+
+  local has_copilot_param=0 has_mise_param=0
+  if has_param_value "copilotVersion=1.0.91"; then
+    has_copilot_param=1
+  fi
+  if has_param_value "miseVersion=2026.10.6"; then
+    has_mise_param=1
+  fi
+
+  # latest 指定時は --param が省略されることの検証
+  : > "${lima_log}"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" create ENV_FILE="${empty_env}" COPILOT_VERSION="latest" MISE_VERSION="latest" >/dev/null 2>&1
+  )
+
+  local copilot_omitted=0 mise_omitted=0
+  if ! grep -q "copilotVersion=" "${lima_log}"; then
+    copilot_omitted=1
+  fi
+  if ! grep -q "miseVersion=" "${lima_log}"; then
+    mise_omitted=1
+  fi
+
+  if [ "${has_copilot_param}" -eq 1 ] && [ "${has_mise_param}" -eq 1 ] && \
+     [ "${copilot_omitted}" -eq 1 ] && [ "${mise_omitted}" -eq 1 ]; then
+    log_pass "${suite}: CLI version precedence, normalization, and --param passing"
+  else
+    log_fail "${suite}: CLI version precedence or normalization failed"
+  fi
+
+  # 4.7 不正な COPILOT_VERSION / MISE_VERSION の拒否
+  log_test "${suite}: make create rejects invalid COPILOT_VERSION and MISE_VERSION"
+  : > "${lima_log}"
+  local bad_copilot_rej=0 bad_mise_rej=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" create ENV_FILE="${empty_env}" COPILOT_VERSION="invalid;string" >/dev/null 2>&1
+  ) || bad_copilot_rej=1
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" create ENV_FILE="${empty_env}" MISE_VERSION="prerelease" >/dev/null 2>&1
+  ) || bad_mise_rej=1
+
+  if [ "${bad_copilot_rej}" -eq 1 ] && [ "${bad_mise_rej}" -eq 1 ] && ! grep -qx "create" "${lima_log}"; then
+    log_pass "${suite}: make create rejects invalid COPILOT_VERSION and MISE_VERSION"
+  else
+    log_fail "${suite}: make create did not reject invalid version parameter"
   fi
 }
 
@@ -3206,6 +3688,45 @@ EOF
     log_pass "${suite}: probe basic tools rejects repository when dpkg query is empty"
   else
     log_fail "${suite}: probe basic tools accepted repository when dpkg query was empty"
+  fi
+
+  # 7.13 probe CLI tools: 不正な PARAM_copilotVersion / PARAM_miseVersion の拒否
+  log_test "${suite}: probe CLI tools rejects invalid version parameters"
+  local p3_bad_copilot_stderr="${test_dir}/p3_bad_copilot.stderr"
+  local p3_bad_copilot_failed=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_home}"
+    export PARAM_copilotVersion="invalid version"
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p3_script}" 2>"${p3_bad_copilot_stderr}"
+  ) || p3_bad_copilot_failed=1
+
+  local p3_bad_mise_stderr="${test_dir}/p3_bad_mise.stderr"
+  local p3_bad_mise_failed=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_home}"
+    export PARAM_miseVersion="prerelease"
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p3_script}" 2>"${p3_bad_mise_stderr}"
+  ) || p3_bad_mise_failed=1
+
+  local has_bad_copilot_msg=0 has_bad_mise_msg=0
+  if grep -q "invalid param copilotVersion:" "${p3_bad_copilot_stderr}" 2>/dev/null; then
+    has_bad_copilot_msg=1
+  fi
+  if grep -q "invalid param miseVersion:" "${p3_bad_mise_stderr}" 2>/dev/null; then
+    has_bad_mise_msg=1
+  fi
+
+  if [ "${p3_bad_copilot_failed}" -eq 1 ] && [ "${p3_bad_mise_failed}" -eq 1 ] && \
+     [ "${has_bad_copilot_msg}" -eq 1 ] && [ "${has_bad_mise_msg}" -eq 1 ]; then
+    log_pass "${suite}: probe CLI tools rejects invalid version parameters"
+  else
+    log_fail "${suite}: probe CLI tools failed to reject invalid version parameters"
   fi
 }
 

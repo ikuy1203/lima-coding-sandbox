@@ -4,6 +4,15 @@
 # 公式手順: https://mise.jdx.dev/installing-mise.html
 # インストール先: ~/.local/bin/mise（以後の更新は `mise self-update`）
 #
+# バージョン固定（param.miseVersion / .env の MISE_VERSION）:
+# 公式 install スクリプト（https://mise.run）は環境変数 MISE_VERSION（例: 2026.10.7）を読み、
+# 解決されたバージョンがスクリプト自身の埋め込みバージョンと同一であれば埋め込みチェックサムを使い、
+# 異なる場合は GitHub Releases から SHASUMS256.txt を取得して SHA-256 チェックサムを厳格に照合する。
+# チェックサムが取得できない場合や不一致時は即座に中断する（fail-closed）。
+# 未指定（空）時は既定の最低公開期間（24 時間）を満たす最新安定版が選択される。
+# 指定したバージョンが効くのは初回インストール時のみで、以後の更新は手動更新に任せる。
+# 本スクリプトでは導入後に verify_cli で指定版の一致と実動作を確認する。
+#
 # 本体は https://mise.run で入れる（シェルの設定ファイルは書き換えない）。
 # bash 用の https://mise.run/bash は ~/.bashrc に `mise activate bash` を追記するため使わない。
 #
@@ -24,6 +33,20 @@
 # ~/.local/bin を PATH に追加しているのも ~/.profile なので、エージェントが動く環境には必ず入る。
 set -eux -o pipefail
 
+mise_ver="${PARAM_miseVersion:-}"
+case "${mise_ver}" in
+  ""|latest)
+    mise_ver=""
+    ;;
+  *)
+    if ! printf '%s\n' "${mise_ver}" | grep -Eq '^[vV]?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z._-]+)?$'; then
+      echo >&2 "error: param miseVersion is invalid: '${mise_ver}' (expected semver)"
+      exit 1
+    fi
+    mise_ver="${mise_ver#[vV]}"
+    ;;
+esac
+
 tmp_files=()
 cleanup() {
   if [ "${#tmp_files[@]}" -gt 0 ]; then
@@ -35,6 +58,7 @@ trap cleanup EXIT
 verify_cli() {
   local name="$1"
   local bin="$2"
+  local expected_version="${3:-}"
   local verify_timeout="${CLI_VERIFY_TIMEOUT:-10}"
 
   if [ ! -e "${bin}" ] && [ ! -L "${bin}" ]; then
@@ -46,19 +70,47 @@ verify_cli() {
     return 1
   fi
 
+  local ver_out=""
   local rc=0
-  if timeout -k 2 "${verify_timeout}" "${bin}" --version >/dev/null 2>&1; then
-    return 0
+  if ver_out=$(timeout -k 2 "${verify_timeout}" "${bin}" --version 2>&1); then
+    rc=0
   else
     rc=$?
   fi
 
   if [ "${rc}" -eq 124 ]; then
     echo >&2 "error: ${name} verification failed: '${bin} --version' timed out after ${verify_timeout}s"
-  else
+    return 1
+  elif [ "${rc}" -ne 0 ]; then
     echo >&2 "error: ${name} verification failed: '${bin} --version' exited with code ${rc}"
+    return 1
   fi
-  return 1
+
+  if [ -n "${expected_version}" ]; then
+    local target_ver="${expected_version#[vV]}"
+    local match_ok=0
+    if printf '%s\n' "${ver_out}" | awk -v target="${target_ver}" '
+      {
+        for (i = 1; i <= NF; i++) {
+          t = $i
+          sub(/^[([{<"\047]+/, "", t)
+          sub(/[.,;:!?)\]}>"\047]+$/, "", t)
+          sub(/^[vV]/, "", t)
+          if (t == target) { found = 1; exit 0 }
+        }
+      }
+      END { exit !found }
+    '; then
+      match_ok=1
+    fi
+
+    if [ "${match_ok}" -ne 1 ]; then
+      echo >&2 "error: ${name} verification failed: expected version '${expected_version}', but '${bin} --version' reported: ${ver_out}"
+      return 1
+    fi
+  fi
+
+  return 0
 }
 
 is_transient_curl_rc() {
@@ -217,7 +269,8 @@ if [ "${need_install}" -eq 1 ]; then
     backup_bin=$(mktemp "${bin}.bak.XXXXXX")
     mv -f "${bin}" "${backup_bin}"
   fi
-  if ! { sh "${installer}" && verify_cli "mise" "${bin}"; }; then
+  if ! { MISE_VERSION="${mise_ver}" sh "${installer}" && verify_cli "mise" "${bin}" "${mise_ver}"; }; then
+    rm -f "${bin}"
     if [ -n "${backup_bin}" ] && { [ -e "${backup_bin}" ] || [ -L "${backup_bin}" ]; }; then
       echo >&2 "warning: reinstallation failed; restoring original binary"
       mv -f "${backup_bin}" "${bin}"

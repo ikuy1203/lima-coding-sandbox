@@ -69,6 +69,13 @@
 
 macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）、git 2.53.0、GitHub CLI 2.102.0、Python 3.14.4、Node.js 22.22.1、Docker Engine 29.8.2、herdr 0.9.3、mpg123 1.33.3、Antigravity CLI 1.2.16、GitHub Copilot CLI 1.0.91、mise 2026.10.7
 
+> [!TIP]
+> 上記のうち、GitHub Copilot CLI と mise は `.env`（または `--param`）でバージョンを指定してインスタンスを作成することで、動作確認済みのバージョンを再現できます（[後述](#作成時の設定git-ユーザ情報ホストループバック遮断エージェント指示配置cli-バージョンを-env-で指定する)）。
+> 実際に VM に導入されたツールのバージョンやアーキテクチャは、次のコマンドで一覧確認できます:
+> ```sh
+> limactl shell coding-sandbox bash -c 'for c in git gh docker herdr agy copilot mise; do printf "%-10s " "$c"; "$c" --version 2>&1 | head -n1; done'
+> ```
+
 ## ファイル構成
 
 ```
@@ -118,7 +125,7 @@ make stop     # 停止
 
 | ターゲット | 内容 |
 |---|---|
-| `make start` | インスタンスが無ければ作成してから起動する。作成時には、Git のユーザ名とメールアドレスを `--param` で渡す（[後述](#作成時の設定git-ユーザ情報ホストループバック遮断エージェント指示配置を-env-で指定する)）。ホストループバック遮断やエージェント向け指示ファイルの配置の有無も指定できる（[後述](#作成時の設定git-ユーザ情報ホストループバック遮断エージェント指示配置を-env-で指定する)）。作成前・起動前にホストマウントの混入を自動検査し、設定されている場合は起動を拒否する（[後述](#ホストのマウントが混入しないように)） |
+| `make start` | インスタンスが無ければ作成してから起動する。作成時には、Git のユーザ名とメールアドレスを `--param` で渡す（[後述](#作成時の設定git-ユーザ情報ホストループバック遮断エージェント指示配置cli-バージョンを-env-で指定する)）。ホストループバック遮断、エージェント向け指示ファイルの配置の有無、CLI ツールの固定バージョンも指定できる（[後述](#作成時の設定git-ユーザ情報ホストループバック遮断エージェント指示配置cli-バージョンを-env-で指定する)）。作成前・起動前にホストマウントの混入を自動検査し、設定されている場合は起動を拒否する（[後述](#ホストのマウントが混入しないように)） |
 | `make shell` | シェルに入る（停止していれば先に起動する） |
 | `make herdr` | herdr のセッションに入る（無ければ作る。停止していれば先に起動する） |
 | `make herdr-remote` | ホストの herdr から VM のセッションにリモート接続する（停止していれば先に起動する。[後述](#herdr)） |
@@ -132,16 +139,17 @@ make stop     # 停止
 | `make logs` | プロビジョニングのログ（cloud-init）の末尾を表示する |
 | `make lint` | `scripts/lint.sh` を実行する |
 
-変数をコマンドラインで指定すると、インスタンス名・リソース（作成時のみ有効）・タイムアウト・Git の設定・ホストループバック遮断・エージェント指示配置を変えられます。
+変数をコマンドラインで指定すると、インスタンス名・リソース（作成時のみ有効）・タイムアウト・Git の設定・ホストループバック遮断・エージェント指示配置・CLI バージョンを変えられます。
 
 ```sh
 make start NAME=sandbox2 CPUS=8 MEMORY=16 DISK=200 TIMEOUT=30m
 make start GIT_USER_NAME="<名前>" GIT_USER_EMAIL="<メールアドレス>" BLOCK_HOST_LOOPBACK=false AGENT_INSTRUCTIONS=true
+make start COPILOT_VERSION=1.0.91 MISE_VERSION=2026.10.7
 ```
 
 `--param` は `limactl create` で渡しているため、名前にカンマが含まれていても問題ありません。
 
-#### 作成時の設定（Git ユーザ情報・ホストループバック遮断・エージェント指示配置）を .env で指定する
+#### 作成時の設定（Git ユーザ情報・ホストループバック遮断・エージェント指示配置・CLI バージョン）を .env で指定する
 
 `.env.example` をコピーして `.env` を作り、値を書きます（`.env` は `.gitignore` で除外しています）。
 
@@ -155,12 +163,15 @@ GIT_USER_NAME=Taro Yamada
 GIT_USER_EMAIL=taro@example.com
 BLOCK_HOST_LOOPBACK=true
 AGENT_INSTRUCTIONS=false
+COPILOT_VERSION=1.0.91
+MISE_VERSION=2026.10.7
 ```
 
 - `.env` を読むのは Makefile だけです。VM には `limactl create --param` で値だけを渡し、`.env` 自体はコピーしません
 - 値は次の順で決まります: コマンドライン（`make start GIT_USER_NAME=...`） ＞ `.env` ＞ ホストの `git config --global`（Git 情報の場合）。`.env` が無いときや値が空のときは既定値を使います
 - `BLOCK_HOST_LOOPBACK` は、VM から `host.lima.internal`（ホストの `127.0.0.1`）への通信を遮断するかを指定します（`true` / `false`、空なら既定値の `true`。[後述](#ネットワーク)）
 - `AGENT_INSTRUCTIONS` は、VM の前提をまとめたエージェント向けの指示ファイルを配置するかを指定します（`true` / `false`、空なら既定値の `false`。[後述](#エージェント向けの指示ファイル)）
+- `COPILOT_VERSION`・`MISE_VERSION` は、GitHub Copilot CLI と mise の初回インストール時のバージョンを指定します（空なら最新版。`COPILOT_VERSION` には `prerelease` も指定可能）。指定が効くのはインスタンス作成時のみで、以後の更新は各ツールの更新コマンドに任せます（herdr と Antigravity CLI は公式インストーラが未対応のため対象外）
 - make の書式で読み込むため、値に空白やカンマがあってもクォートは要りません（両端を `"` か `'` で囲んだときは、その 1 組を取り除きます）。`#` から行末はコメントになります
 - 別のファイルを使うには `ENV_FILE` を指定します（例: `make start ENV_FILE=work.env`。指定したファイルが無いとエラーになります）。`*.env` も `.gitignore` で除外しています
 - 値が反映されるのは**インスタンスを作成するときだけ**です。作成後に `.env` を変えても今の VM にには反映されません。`make recreate` で作り直してください
@@ -174,7 +185,7 @@ AGENT_INSTRUCTIONS=false
 limactl start ./coding-sandbox.yaml
 ```
 
-Git のユーザ名とメールアドレス、およびホストループバック遮断をあらかじめ設定するには、作成時に `--param` で渡します（ホストの Git 設定をそのまま渡すこともできます）:
+Git のユーザ名とメールアドレス、ホストループバック遮断、およびツールの固定バージョンをあらかじめ設定するには、作成時に `--param` で渡します（ホストの Git 設定をそのまま渡すこともできます）:
 
 ```sh
 limactl start \
@@ -182,6 +193,8 @@ limactl start \
   --param "gitUserEmail=$(git config --global user.email)" \
   --param "blockHostLoopback=true" \
   --param "agentInstructions=false" \
+  --param "copilotVersion=1.0.91" \
+  --param "miseVersion=2026.10.7" \
   ./coding-sandbox.yaml
 ```
 
@@ -683,7 +696,16 @@ limactl shell coding-sandbox sudo tail -n 100 /var/log/cloud-init-output.log
 
 プロビジョニングスクリプトは VM を起動するたびに実行され、インストール済みのソフトウェアは飛ばすように作ってあります。外部インストーラスクリプト（herdr, agy, copilot, mise）や apt リポジトリの鍵（GitHub CLI, Docker Engine）の取得には、接続タイムアウト（既定 10 秒）・試行上限（既定 60 秒）・総時間上限（既定 180 秒）・限定回数のリトライ（既定 3 回、2/4/8 秒の指数バックオフ）を設けており、一時的な通信障害（タイムアウトや HTTP 5xx、接続切断等）からは自動で回復します。また、すべての外部スクリプト・鍵は一時ファイルへのダウンロードが完了してから実行・配置されるため、通信切断などで壊れたスクリプトが実行されたり既存の鍵ファイルが破損したりすることはありません。
 
-各 CLI ツール（herdr, agy, copilot, mise）および GitHub CLI（gh）は、単なるファイルの存在確認だけでなく、タイムアウト付きの `--version` 実行により実動作を確認します。既存のバイナリが破損していた場合（実行不可、タイムアウト、非ゼロ終了）は自動で除去されて再インストールが行われます。また Git のコミット署名についても、秘密鍵・公開鍵のペア整合性と一時リポジトリでの署名・ローカル検証をプロビジョニングおよび起動時 probes の双方で確認し、意図しない設定破損や起動失敗を防止します。
+各 CLI ツール（herdr, agy, copilot, mise）および GitHub CLI（gh）は、単なるファイルの存在確認だけでなく、タイムアウト付きの `--version` 実行により実動作を確認します。既存のバイナリが破損していた場合（実行不可、タイムアウト、非ゼロ終了）は自動で除去されて再インストールが行われます。また、`COPILOT_VERSION` や `MISE_VERSION` でバージョンを指定して作成した場合は、導入直後に `--version` の出力と指定版の完全一致を検証します。存在しないバージョンの指定や、指定が無視されて最新版へ暗黙にフォールバックされた場合はエラーとなり、未検証のバイナリを残さず安全に失敗します（指定したバージョンが効くのは初回インストール時のみで、以後に `copilot update` や `mise self-update` で手動更新されたバージョンは再起動時にも維持されます）。
+
+また Git のコミット署名についても、秘密鍵・公開鍵のペア整合性と一時リポジトリでの署名・ローカル検証をプロビジョニングおよび起動時 probes の双方で確認し、意図しない設定破損や起動失敗を防止します。
+
+各配布方式のチェックサム・署名検証の仕組みと制約は以下のとおりです:
+- **GitHub Copilot CLI**: 公式インストーラが GitHub Releases からアーカイブと `SHA256SUMS.txt` を取得し、`sha256sum` で SHA-256 チェックサムを検証します（不一致時は中断）。ただし `SHA256SUMS.txt` の取得自体が失敗した場合は検証をスキップして続行する制約（fail-open）があるため、本サンドボックスでは導入後のバージョン一致・実動作確認を厳格に行います。
+- **mise**: 公式インストーラが解決したバージョンとスクリプト自身の埋め込みバージョンを比較し、同一であれば埋め込みチェックサム、異なる場合は GitHub Releases から `SHASUMS256.txt` を取得して照合します。チェックサムが取得できない場合や不一致時は即座に中断します（fail-closed）。
+- **herdr**: 公式インストーラが `latest.json` に記載された `sha256` と取得バイナリを照合して検証します（独立した署名ファイルは公開されていません）。バージョン指定には未対応です。
+- **Antigravity CLI**: 公式インストーラが Google Cloud Storage から `checksums.txt` を取得して照合します（`checksums.txt` 不在時はスキップされる制約があります）。バージョン指定には未対応で、バックグラウンドで自動更新されます。
+- **apt パッケージ（gh, docker）**: 公式リポジトリの GPG 公開鍵リング（`githubcli-archive-keyring.gpg`、`docker.asc`）を登録し、APT パッケージマネージャ自身の暗号署名検証（InRelease / Release.gpg）によって改ざん防止と完全性を担保しています。
 
 > [!NOTE]
 > スクリプトが設けているタイムアウト・リトライおよび一時ファイル管理は、本プロジェクトが直接取得する**インストーラスクリプト自体の取得および apt 鍵の取得**を対象としています。各ツールの公式インストーラ内部で行われる本体アーカイブ等のダウンロードの挙動（タイムアウト設定の有無、失敗時の終了コード、部分配置や残存ファイルの後始末）は、各上流ツールの実装に依存します（外側の `curl` オプションは引き継がれません）。上流インストーラ内部の取得で失敗した場合は、`/var/log/cloud-init-output.log` のエラーログを確認してください。

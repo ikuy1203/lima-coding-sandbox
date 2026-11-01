@@ -46,6 +46,14 @@ param:
   # Antigravity CLI（~/.gemini/config/rules/lima-coding-sandbox.md）に配置する。
   # make start で作成する場合は .env の AGENT_INSTRUCTIONS で指定できる
   agentInstructions: "false"
+  # GitHub Copilot CLI と mise のインストール時のバージョン（provision/copilot-cli.sh、provision/mise.sh）。
+  # 空なら最新版をインストールする。新しい版に問題があるときに、動作確認済みの版で作り直すために使う
+  # （例: copilotVersion: "1.0.91" または "prerelease"、miseVersion: "2026.10.7"）。
+  # 指定が効くのは初回インストール時だけで、その後の更新は各ツールの更新コマンドに任せる。
+  # herdr と Antigravity CLI は公式の install スクリプトがバージョン指定に未対応のため対象外。
+  # make start で作成する場合は .env の COPILOT_VERSION / MISE_VERSION で指定できる
+  copilotVersion: ""
+  miseVersion: ""
 
 # ホストのディレクトリは一切マウントしない。
 # ただし $LIMA_HOME/_config/default.yaml・override.yaml（作成時は base.yaml も）にマウントの設定があると、
@@ -328,6 +336,19 @@ probes:
   script: |
     #!/bin/bash
     set -eu -o pipefail
+    # param copilotVersion / miseVersion の構文を検証する
+    if [ -n "${PARAM_copilotVersion:-}" ] && [ "${PARAM_copilotVersion}" != "latest" ] && [ "${PARAM_copilotVersion}" != "prerelease" ]; then
+      if ! printf '%s\n' "${PARAM_copilotVersion}" | grep -Eq '^[vV]?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z._-]+)?$'; then
+        echo >&2 "invalid param copilotVersion: '${PARAM_copilotVersion}' (expected semver or 'prerelease')"
+        exit 1
+      fi
+    fi
+    if [ -n "${PARAM_miseVersion:-}" ] && [ "${PARAM_miseVersion}" != "latest" ]; then
+      if ! printf '%s\n' "${PARAM_miseVersion}" | grep -Eq '^[vV]?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z._-]+)?$'; then
+        echo >&2 "invalid param miseVersion: '${PARAM_miseVersion}' (expected semver)"
+        exit 1
+      fi
+    fi
     bins=(herdr agy copilot mise)
     check_bin() {
       local bin="$1"
