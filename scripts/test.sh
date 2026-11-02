@@ -1817,7 +1817,7 @@ printf '%s\n' '---CMD_DELIM---' >> "${STUB_LIMACTL_LOG}"
 cmd=""
 for arg in "$@"; do
   case "$arg" in
-    template|list|create|start|stop)
+    template|list|create|start|stop|delete|shell)
       cmd="$arg"
       break
       ;;
@@ -1832,6 +1832,9 @@ case "$cmd" in
     exit 0
     ;;
   list)
+    if [ "${STUB_LIMA_LIST_FAIL:-0}" = "1" ]; then
+      exit 1
+    fi
     case "$*" in
       *Name*Status*)
         # get-status
@@ -1844,6 +1847,10 @@ case "$cmd" in
         elif [ "${STUB_MOUNT_AFTER_START_FAIL:-0}" = "1" ] && grep -qx "start" "${STUB_LIMACTL_LOG}"; then
           echo "- location: /Users/test/mounted"
         fi
+        exit 0
+        ;;
+      *.Dir*)
+        echo "${STUB_LIMA_DIR_OUTPUT:-/tmp/fake-lima-dir}"
         exit 0
         ;;
       *)
@@ -1864,6 +1871,21 @@ case "$cmd" in
     exit 0
     ;;
   stop)
+    if [ "${STUB_STOP_FAIL:-0}" = "1" ]; then
+      exit 1
+    fi
+    exit 0
+    ;;
+  delete)
+    exit 0
+    ;;
+  shell)
+    if [ -n "${STUB_LIMA_SHELL_STDIN:-}" ]; then
+      cat > "${STUB_LIMA_SHELL_STDIN}"
+    fi
+    if [ "${STUB_LIMA_SHELL_FAIL:-0}" = "1" ]; then
+      exit 1
+    fi
     exit 0
     ;;
   *)
@@ -2083,6 +2105,491 @@ EOF
     log_pass "${suite}: make create rejects invalid COPILOT_VERSION and MISE_VERSION"
   else
     log_fail "${suite}: make create did not reject invalid version parameter"
+  fi
+
+  # 4.8 scripts/lib.sh: normalize 関数の単体テスト（各 assertion を個別に検証し偽陽性を防止）
+  log_test "${suite}: scripts/lib.sh normalize unit tests"
+  # shellcheck source=scripts/lib.sh
+  source "${REPO_ROOT}/scripts/lib.sh"
+  local norm_failures=0
+  assert_norm() {
+    local actual expected="$2"
+    actual=$(normalize "$1")
+    if [ "${actual}" != "${expected}" ]; then
+      echo >&2 "normalize('$1') = '${actual}', expected '${expected}'"
+      norm_failures=$((norm_failures + 1))
+    fi
+  }
+  assert_norm "" ""
+  assert_norm "   " ""
+  assert_norm '  "  Doe, John  "  ' "Doe, John"
+  assert_norm "  '  john@example.com  '  " "john@example.com"
+  assert_norm ' ""inner"" ' '"inner"'
+  assert_norm " '\"inner\"' " '"inner"'
+  assert_norm ' "\"escaped\"" ' '\"escaped\"'
+  assert_norm ' "unmatched ' '"unmatched'
+  assert_norm '"' '"'
+
+  if [ "${norm_failures}" -eq 0 ]; then
+    log_pass "${suite}: scripts/lib.sh normalize unit tests"
+  else
+    log_fail "${suite}: scripts/lib.sh normalize unit tests failed (${norm_failures} failure(s))"
+  fi
+
+  # 4.9 scripts/lib.sh: get_status と resolve_name の単体テスト（状態取得・未作成・エラー伝播・空 NAME 拒否）
+  log_test "${suite}: scripts/lib.sh get_status and resolve_name unit tests"
+  local st_running st_stopped st_missing st_fail_rc=0
+  local rn_default rn_quoted rn_empty_rc=0 rn_quoted_empty_rc=0
+  st_running=$(
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT=$'coding-sandbox2 Stopped\ncoding-sandbox Running'
+    get_status "coding-sandbox"
+  )
+  st_stopped=$(
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT=$'coding-sandbox2 Stopped\ncoding-sandbox Running'
+    get_status "coding-sandbox2"
+  )
+  st_missing=$(
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT=$'coding-sandbox2 Stopped\ncoding-sandbox Running'
+    get_status "nonexistent"
+  )
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_LIST_FAIL=1
+    get_status "coding-sandbox" >/dev/null 2>&1
+  ) || st_fail_rc=$?
+
+  rn_default=$(unset NAME; resolve_name)
+  rn_quoted=$(NAME=' "sandbox2" ' resolve_name)
+  (NAME="" resolve_name >/dev/null 2>&1) || rn_empty_rc=$?
+  (NAME=' "  " ' resolve_name >/dev/null 2>&1) || rn_quoted_empty_rc=$?
+
+  if [ "${st_running}" = "Running" ] && \
+     [ "${st_stopped}" = "Stopped" ] && \
+     [ -z "${st_missing}" ] && \
+     [ "${st_fail_rc}" -ne 0 ] && \
+     [ "${rn_default}" = "coding-sandbox" ] && \
+     [ "${rn_quoted}" = "sandbox2" ] && \
+     [ "${rn_empty_rc}" -ne 0 ] && \
+     [ "${rn_quoted_empty_rc}" -ne 0 ]; then
+    log_pass "${suite}: scripts/lib.sh get_status and resolve_name unit tests"
+  else
+    log_fail "${suite}: scripts/lib.sh get_status and resolve_name unit tests failed"
+  fi
+
+  # 4.10 空の NAME 指定時（make delete NAME= YES=1 等）に既定 VM を操作せず即エラー終了すること
+  log_test "${suite}: reject empty NAME without touching default coding-sandbox instance"
+  : > "${lima_log}"
+  local empty_del_rc=0 empty_stop_rc=0 empty_create_rc=0 empty_start_rc=0 empty_shell_rc=0 empty_status_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" NAME= YES=1 >/dev/null 2>&1
+  ) || empty_del_rc=$?
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    make -f "${REPO_ROOT}/Makefile" stop ENV_FILE="${empty_env}" NAME=' "" ' >/dev/null 2>&1
+  ) || empty_stop_rc=$?
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" create ENV_FILE="${empty_env}" NAME= >/dev/null 2>&1
+  ) || empty_create_rc=$?
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" start ENV_FILE="${empty_env}" NAME= >/dev/null 2>&1
+  ) || empty_start_rc=$?
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" shell ENV_FILE="${empty_env}" NAME= >/dev/null 2>&1
+  ) || empty_shell_rc=$?
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" status ENV_FILE="${empty_env}" NAME= >/dev/null 2>&1
+  ) || empty_status_rc=$?
+
+  local empty_name_lima_calls
+  empty_name_lima_calls=$(wc -l < "${lima_log}" | tr -d ' ')
+
+  if [ "${empty_del_rc}" -ne 0 ] && [ "${empty_stop_rc}" -ne 0 ] && \
+     [ "${empty_create_rc}" -ne 0 ] && [ "${empty_start_rc}" -ne 0 ] && \
+     [ "${empty_shell_rc}" -ne 0 ] && [ "${empty_status_rc}" -ne 0 ] && \
+     [ "${empty_name_lima_calls}" -eq 0 ]; then
+    log_pass "${suite}: reject empty NAME without touching default coding-sandbox instance"
+  else
+    log_fail "${suite}: empty NAME was not rejected or triggered limactl calls (calls=${empty_name_lima_calls})"
+  fi
+
+  # 4.11 引用符・内側空白付きのリソース・タイムアウト・NAME 指定（.env および CLI）の全ターゲット一貫性
+  log_test "${suite}: normalize quoted/spaced NAME, CPUS, MEMORY, DISK, and TIMEOUT across targets"
+  local resource_env="${test_dir}/resource.env"
+  cat > "${resource_env}" << 'EOF'
+NAME=" sandbox-quoted "
+CPUS="8"
+MEMORY=' 16 '
+DISK="200"
+TIMEOUT="30m"
+EOF
+
+  : > "${lima_log}"
+  local quoted_start_ok=0 quoted_targets_ok=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" start ENV_FILE="${resource_env}" 'DISK="250"' 'TIMEOUT="45m"' >/dev/null 2>&1
+  ) && quoted_start_ok=1
+
+  local target_log="${test_dir}/target_name.log"
+  quoted_targets_ok=1
+  local tgt expected_count actual_norm actual_unnorm
+  for tgt in shell herdr status pubkey logs; do
+    : > "${target_log}"
+    if ! (
+      export PATH="${fake_bin}:${PATH}"
+      export STUB_LIMACTL_LOG="${target_log}"
+      export STUB_LIMA_STATUS_OUTPUT="sandbox2 Running"
+      make -f "${REPO_ROOT}/Makefile" "${tgt}" ENV_FILE="${empty_env}" 'NAME=" sandbox2 "' >/dev/null 2>&1
+    ); then
+      quoted_targets_ok=0
+      break
+    fi
+    case "${tgt}" in
+      shell|herdr) expected_count=3 ;;
+      *) expected_count=1 ;;
+    esac
+    actual_unnorm=$(grep -cx -- " sandbox2 " "${target_log}" || true)
+    actual_norm=$(grep -cx -- "sandbox2" "${target_log}" || true)
+    if [ "${actual_unnorm}" -ne 0 ] || [ "${actual_norm}" -ne "${expected_count}" ]; then
+      quoted_targets_ok=0
+      break
+    fi
+  done
+
+  if [ "${quoted_start_ok}" -eq 1 ] && [ "${quoted_targets_ok}" -eq 1 ] && \
+     grep -qx -- "--name=sandbox-quoted" "${lima_log}" && \
+     grep -qx -- "--cpus=8" "${lima_log}" && \
+     grep -qx -- "--memory=16" "${lima_log}" && \
+     grep -qx -- "--disk=250" "${lima_log}" && \
+     grep -qx -- "--timeout=45m" "${lima_log}" && \
+     grep -qx -- "sandbox-quoted" "${lima_log}"; then
+    log_pass "${suite}: normalize quoted/spaced NAME, CPUS, MEMORY, DISK, and TIMEOUT across targets"
+  else
+    log_fail "${suite}: quoted resource or NAME normalization across targets failed"
+  fi
+
+  # 4.12 make stop (scripts/stop.sh): Running 時の停止、Stopped 時のスキップ、状態照会失敗時のエラー伝播
+  log_test "${suite}: make stop stops running instance, skips stopped, and fails on status error"
+  : > "${lima_log}"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    make -f "${REPO_ROOT}/Makefile" stop ENV_FILE="${empty_env}" >/dev/null 2>&1
+  )
+  local stop_when_running
+  stop_when_running=$(grep -cx "stop" "${lima_log}" || true)
+
+  : > "${lima_log}"
+  local stop_msg
+  stop_msg=$(
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Stopped"
+    make -f "${REPO_ROOT}/Makefile" stop ENV_FILE="${empty_env}" 2>&1
+  )
+  local stop_when_stopped
+  stop_when_stopped=$(grep -cx "stop" "${lima_log}" || true)
+
+  : > "${lima_log}"
+  local stop_list_fail_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_LIST_FAIL=1
+    make -f "${REPO_ROOT}/Makefile" stop ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || stop_list_fail_rc=$?
+  local stop_on_list_fail
+  stop_on_list_fail=$(grep -cx "stop" "${lima_log}" || true)
+
+  if [ "${stop_when_running}" -eq 1 ] && [ "${stop_when_stopped}" -eq 0 ] && \
+     printf '%s\n' "${stop_msg}" | grep -q "動いていません" && \
+     [ "${stop_list_fail_rc}" -ne 0 ] && [ "${stop_on_list_fail}" -eq 0 ]; then
+    log_pass "${suite}: make stop stops running instance, skips stopped, and fails on status error"
+  else
+    log_fail "${suite}: make stop behavior failed"
+  fi
+
+  # 4.13 make delete (scripts/delete.sh): 未作成・確認中止・確認承認・YES=1・停止失敗時の削除中止
+  log_test "${suite}: make delete confirmation prompt, YES=1, and abort when stop fails"
+  : > "${lima_log}"
+  local del_nonexistent_ok=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT=""
+    make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) && del_nonexistent_ok=1
+  local del_nonexistent_calls
+  del_nonexistent_calls=$(grep -cx "delete" "${lima_log}" || true)
+
+  # 確認プロンプトで n を入力して中止
+  : > "${lima_log}"
+  local del_aborted=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Stopped"
+    printf 'n\n' | make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || del_aborted=1
+  local del_aborted_calls
+  del_aborted_calls=$(grep -cx "delete" "${lima_log}" || true)
+
+  # Running 状態で y を入力して stop -> delete
+  : > "${lima_log}"
+  local del_confirmed_ok=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    printf 'y\n' | make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) && del_confirmed_ok=1
+  local del_confirmed_stops del_confirmed_deletes
+  del_confirmed_stops=$(grep -cx "stop" "${lima_log}" || true)
+  del_confirmed_deletes=$(grep -cx "delete" "${lima_log}" || true)
+
+  # Running 状態で limactl stop が失敗した場合は limactl delete を呼ばずに異常終了すること
+  : > "${lima_log}"
+  local del_stop_fail_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_STOP_FAIL=1
+    make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" YES=1 >/dev/null 2>&1
+  ) || del_stop_fail_rc=$?
+  local del_after_stop_fail
+  del_after_stop_fail=$(grep -cx "delete" "${lima_log}" || true)
+
+  # YES="1"（引用符付き）でもプロンプトなし削除が動くこと
+  : > "${lima_log}"
+  local del_yes_ok=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Stopped"
+    make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" 'YES="1"' </dev/null >/dev/null 2>&1
+  ) && del_yes_ok=1
+  local del_yes_deletes
+  del_yes_deletes=$(grep -cx "delete" "${lima_log}" || true)
+
+  if [ "${del_nonexistent_ok}" -eq 1 ] && [ "${del_nonexistent_calls}" -eq 0 ] && \
+     [ "${del_aborted}" -eq 1 ] && [ "${del_aborted_calls}" -eq 0 ] && \
+     [ "${del_confirmed_ok}" -eq 1 ] && [ "${del_confirmed_stops}" -eq 1 ] && [ "${del_confirmed_deletes}" -eq 1 ] && \
+     [ "${del_stop_fail_rc}" -ne 0 ] && [ "${del_after_stop_fail}" -eq 0 ] && \
+     [ "${del_yes_ok}" -eq 1 ] && [ "${del_yes_deletes}" -eq 1 ]; then
+    log_pass "${suite}: make delete confirmation prompt, YES=1, and abort when stop fails"
+  else
+    log_fail "${suite}: make delete behavior failed"
+  fi
+
+  # 4.14 scripts/herdr-remote.sh: herdr 未導入・ssh 未設定の拒否と正常接続
+  log_test "${suite}: scripts/herdr-remote.sh prerequisite checks and remote invocation"
+  local herdr_log="${test_dir}/herdr.log"
+  cat > "${fake_bin}/ssh" << 'EOF'
+#!/bin/bash
+set -eu
+if [ "${1:-}" = "-G" ]; then
+  echo "hostname ${STUB_SSH_G_HOSTNAME:-127.0.0.1}"
+  exit 0
+fi
+printf '%s\n' "$@" > "${STUB_SSH_LOG}"
+if [ "${STUB_SSH_FAIL:-0}" = "1" ]; then
+  exit 255
+fi
+exit 0
+EOF
+  chmod +x "${fake_bin}/ssh"
+
+  # herdr が PATH に無い状態で失敗すること
+  local no_herdr_failed=0
+  (
+    export PATH="${fake_bin}:/usr/bin:/bin"
+    if command -v herdr >/dev/null 2>&1; then
+      exit 1
+    fi
+    bash "${REPO_ROOT}/scripts/herdr-remote.sh" >/dev/null 2>&1
+  ) || no_herdr_failed=1
+
+  cat > "${fake_bin}/herdr" << 'EOF'
+#!/bin/bash
+set -eu
+printf '%s\n' "$*" > "${STUB_HERDR_LOG}"
+exit 0
+EOF
+  chmod +x "${fake_bin}/herdr"
+
+  # ssh -G がホスト名をそのまま返す（Include 未設定）ときに失敗すること
+  local unconf_ssh_failed=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_HERDR_LOG="${herdr_log}"
+    export STUB_SSH_G_HOSTNAME="lima-coding-sandbox"
+    bash "${REPO_ROOT}/scripts/herdr-remote.sh" >/dev/null 2>&1
+  ) || unconf_ssh_failed=1
+
+  # ssh -G が 127.0.0.1 を返すときに herdr --remote lima-<NAME> が呼ばれること
+  : > "${herdr_log}"
+  local herdr_remote_ok=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_HERDR_LOG="${herdr_log}"
+    export STUB_SSH_G_HOSTNAME="127.0.0.1"
+    export STUB_LIMA_STATUS_OUTPUT="sandbox2 Running"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" herdr-remote ENV_FILE="${empty_env}" 'NAME="sandbox2"' >/dev/null 2>&1
+  ) && herdr_remote_ok=1
+
+  if [ "${no_herdr_failed}" -eq 1 ] && [ "${unconf_ssh_failed}" -eq 1 ] && \
+     [ "${herdr_remote_ok}" -eq 1 ] && grep -qx -- "--remote lima-sandbox2" "${herdr_log}"; then
+    log_pass "${suite}: scripts/herdr-remote.sh prerequisite checks and remote invocation"
+  else
+    log_fail "${suite}: scripts/herdr-remote.sh checks failed"
+  fi
+
+  # 4.15 make forward (scripts/forward.sh): PORT / HOST_PORT 検証、ControlMaster 無効化オプション、ssh 失敗伝播
+  log_test "${suite}: make forward port validation, ControlMaster options, and ssh error propagation"
+  local ssh_log="${test_dir}/ssh.log"
+  local no_port_failed=0 bad_port_failed=0 bad_host_port_failed=0 forward_ok=0 forward_ssh_fail_rc=0
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    bash "${REPO_ROOT}/scripts/forward.sh" >/dev/null 2>&1
+  ) || no_port_failed=1
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    PORT="abc" bash "${REPO_ROOT}/scripts/forward.sh" >/dev/null 2>&1
+  ) || bad_port_failed=1
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    PORT="3000" HOST_PORT="abc" bash "${REPO_ROOT}/scripts/forward.sh" >/dev/null 2>&1
+  ) || bad_host_port_failed=1
+
+  : > "${ssh_log}"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_DIR_OUTPUT="/tmp/test-lima-instance"
+    export STUB_SSH_LOG="${ssh_log}"
+    make -f "${REPO_ROOT}/Makefile" forward ENV_FILE="${empty_env}" 'PORT="3000"' 'HOST_PORT="13000"' >/dev/null 2>&1
+  ) && forward_ok=1
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_DIR_OUTPUT="/tmp/test-lima-instance"
+    export STUB_SSH_LOG="${test_dir}/ssh_fail.log"
+    export STUB_SSH_FAIL=1
+    make -f "${REPO_ROOT}/Makefile" forward ENV_FILE="${empty_env}" PORT=3000 >/dev/null 2>&1
+  ) || forward_ssh_fail_rc=$?
+
+  if [ "${no_port_failed}" -eq 1 ] && [ "${bad_port_failed}" -eq 1 ] && \
+     [ "${bad_host_port_failed}" -eq 1 ] && [ "${forward_ok}" -eq 1 ] && \
+     [ "${forward_ssh_fail_rc}" -ne 0 ] && \
+     grep -qx "/tmp/test-lima-instance/ssh.config" "${ssh_log}" && \
+     grep -qx "ControlMaster=no" "${ssh_log}" && \
+     grep -qx "ControlPath=none" "${ssh_log}" && \
+     grep -qx "ExitOnForwardFailure=yes" "${ssh_log}" && \
+     grep -qx -- "-N" "${ssh_log}" && \
+     grep -qx "127.0.0.1:13000:127.0.0.1:3000" "${ssh_log}" && \
+     grep -qx "lima-coding-sandbox" "${ssh_log}"; then
+    log_pass "${suite}: make forward port validation, ControlMaster options, and ssh error propagation"
+  else
+    log_fail "${suite}: make forward validation or ssh invocation failed"
+  fi
+
+  # 4.16 make terminfo (scripts/terminfo.sh): 事前検証（起動前失敗）、tic -x - 引数検証、tic 失敗伝播
+  log_test "${suite}: make terminfo pre-start check, tic arguments, and tic failure propagation"
+  cat > "${fake_bin}/infocmp" << 'EOF'
+#!/bin/bash
+set -eu
+if [ "${STUB_INFOCMP_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
+echo "fake-terminfo-data-for-$*"
+EOF
+  chmod +x "${fake_bin}/infocmp"
+
+  # TERM_NAME が空、または infocmp 失敗時は start (limactl) が呼ばれる前に失敗すること
+  : > "${lima_log}"
+  local empty_term_failed=0 missing_term_failed=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" terminfo ENV_FILE="${empty_env}" TERM_NAME="" >/dev/null 2>&1
+  ) || empty_term_failed=1
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_INFOCMP_FAIL=1
+    make -f "${REPO_ROOT}/Makefile" terminfo ENV_FILE="${empty_env}" TERM_NAME="xterm-ghostty" >/dev/null 2>&1
+  ) || missing_term_failed=1
+
+  local lima_calls_on_term_fail
+  lima_calls_on_term_fail=$(wc -l < "${lima_log}" | tr -d ' ')
+
+  # 正常時は infocmp の出力が limactl shell <NAME> tic -x - の標準入力に渡ること
+  local tic_stdin="${test_dir}/tic.stdin"
+  : > "${lima_log}"
+  local terminfo_ok=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_SHELL_STDIN="${tic_stdin}"
+    make -f "${REPO_ROOT}/Makefile" terminfo ENV_FILE="${empty_env}" 'TERM_NAME="xterm-ghostty"' >/dev/null 2>&1
+  ) && terminfo_ok=1
+
+  # tic (limactl shell) が失敗した場合は非ゼロ終了すること
+  local tic_fail_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_SHELL_STDIN="${tic_stdin}"
+    export STUB_LIMA_SHELL_FAIL=1
+    make -f "${REPO_ROOT}/Makefile" terminfo ENV_FILE="${empty_env}" TERM_NAME="xterm-ghostty" >/dev/null 2>&1
+  ) || tic_fail_rc=$?
+
+  if [ "${empty_term_failed}" -eq 1 ] && [ "${missing_term_failed}" -eq 1 ] && \
+     [ "${lima_calls_on_term_fail}" -eq 0 ] && [ "${terminfo_ok}" -eq 1 ] && \
+     [ "${tic_fail_rc}" -ne 0 ] && \
+     grep -q "fake-terminfo-data-for--x xterm-ghostty" "${tic_stdin}" && \
+     grep -qx "tic" "${lima_log}" && grep -qx -- "-x" "${lima_log}" && grep -qx -- "-" "${lima_log}"; then
+    log_pass "${suite}: make terminfo pre-start check, tic arguments, and tic failure propagation"
+  else
+    log_fail "${suite}: make terminfo check or tic piping failed"
   fi
 }
 

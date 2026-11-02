@@ -2,7 +2,7 @@
 
 本ドキュメントは、`lima-coding-sandbox` の Issue（計 21 件、#6〜#25・#29）について、プロジェクトの目的・セキュリティ・開発効率の観点から評価基準を定め、実装の優先順位とロードマップを整理したものです。
 
-> **最終更新: 2026-11-01** — 完了 13 件 / 未解決 8 件。Phase 1、Phase 2、**Phase 3**（#13, #24, #25, #21）が完了しました（次は Phase 4 の #17）。
+> **最終更新: 2026-11-03** — 完了 14 件 / 未解決 7 件。Phase 1、Phase 2、Phase 3 に続き、**Phase 4 の #17** が完了しました（次は Phase 4 の #12）。
 
 ---
 
@@ -15,7 +15,7 @@
 | Phase 1: Quick Wins & エージェント摩擦解消 | #15, #7, #8, #6, #16, #22 | 6 / 6 | ✅ 完了 |
 | Phase 2: セキュリティ隔離 & 起動高速化 | #10, #9, #18 | 3 / 3 | ✅ 完了 |
 | Phase 3: プロビジョニング堅牢化 & CI 自動テスト | #13, #24, #25, #21 | 4 / 4 | ✅ 完了 |
-| Phase 4: 運用 DX & コードベース保守 | #17, #12, #20, #19, #11 | 0 / 5 | 未着手 |
+| Phase 4: 運用 DX & コードベース保守 | #17, #12, #20, #19, #11 | 1 / 5 | 進行中 |
 | Phase 5: ドキュメント再編 & 実験的機能 | #23, #14, #29 | 0 / 3 | 未着手 |
 
 ### 完了済み Issue
@@ -35,19 +35,17 @@
 | [#24](https://github.com/ikuy1203/lima-coding-sandbox/issues/24) | [Provisioning] 外部ダウンロードのタイムアウト・リトライと失敗時の回復を整備する | [#43](https://github.com/ikuy1203/lima-coding-sandbox/pull/43) | 2026-11-01 | 外部インストーラ（herdr, agy, copilot, mise）および apt 鍵（GitHub CLI, Docker Engine）の取得処理にタイムアウト・限定回数リトライ・恒久/一時エラー判別を導入。一時ファイルへのダウンロード完了後にのみ実行・配置し `trap` で確実に消去。スタブ回帰テストスイートを拡張 |
 | [#25](https://github.com/ikuy1203/lima-coding-sandbox/issues/25) | [Provisioning] インストール済み判定と probes を配布元・実動作の確認に強化する | [#44](https://github.com/ikuy1203/lima-coding-sandbox/pull/44) | 2026-11-01 | GitHub CLI の公式 apt リポジトリ配布元・実動作検証、CLI ツール（herdr, agy, copilot, mise）のタイムアウト付き `--version` 実動作確認と破損時再導入、Git 署名鍵整合性と一時リポジトリでの署名・検証診断、および `coding-sandbox.yaml` probes の配布元・実動作・署名検証強化 |
 | [#21](https://github.com/ikuy1203/lima-coding-sandbox/issues/21) | [Provisioning] サードパーティツールのバージョンを param で固定できるようにする | [#45](https://github.com/ikuy1203/lima-coding-sandbox/pull/45) | 2026-11-01 | `copilotVersion`・`miseVersion` パラメータを追加し、公式 install スクリプトによる指定版導入、導入後のバージョン一致検証、暗黙フォールバックの防止、および再起動時の手動更新版維持を実装。Makefile・.env.example・probes・README を整備 |
+| [#17](https://github.com/ikuy1203/lima-coding-sandbox/issues/17) | [CI] Makefile のシェル処理を scripts/ に移して shellcheck の対象にする | [#46](https://github.com/ikuy1203/lima-coding-sandbox/pull/46) | 2026-11-03 | `Makefile` の各ターゲット処理を `scripts/{lib,create,start,shell,status,stop,delete,herdr-remote,forward,terminfo}.sh` に分離して `shellcheck` の検査対象化。`scripts/test.sh` に `lib.sh` 単体テストと各スクリプトの回帰テストを追加 |
 
 ### 前回からの変更点
 
-- **#21（サードパーティツールのバージョンを param で固定できるようにする）が完了**:
-  - `coding-sandbox.yaml` の `param` に `copilotVersion` と `miseVersion` を追加。
-  - `Makefile` および `.env.example` に `COPILOT_VERSION` と `MISE_VERSION` を追加し、入力値正規化・構文検証・`--param` 受け渡しを整備。
-  - `provision/copilot-cli.sh`、`provision/mise.sh` で環境変数 `VERSION` / `MISE_VERSION` を渡してインストールし、`verify_cli` で指定版との完全一致を厳密検証。
-  - 暗黙のフォールバック（指定無視）や存在しないバージョンの指定時に未検証バイナリを削除して安全に失敗させ、既存の正常な手動更新バイナリは維持。
-  - `provision/{herdr,antigravity-cli,copilot-cli,mise}.sh` の `verify_cli` を共通拡張し、各ツールのチェックサム・署名検証の仕様・制約を整理。
-  - `scripts/test.sh` に 12 件の新規テストを追加（計 96 件、全件 PASS）。
+- **#17（Makefile のシェル処理を scripts/ に移して shellcheck の対象にする）が完了**:
+  - 共通関数（`get_status`, `normalize`, `resolve_name`）を `scripts/lib.sh` に分離。
+  - `create`, `start`, `shell` / `herdr` / `pubkey` / `logs`（`shell.sh`）, `status`, `stop`, `delete`, `herdr-remote`, `forward`, `_check-terminfo` / `terminfo` のシェル処理を `scripts/` 配下のスクリプトに分離し、`scripts/lint.sh` の `shellcheck` で全スクリプトを静的検査。
+  - `Makefile` は `.env` の読み込み・変数の `export`・`help` およびスクリプト呼び出しのみに簡素化。
+  - `scripts/test.sh` に `lib.sh` の単体テストおよび `stop`, `delete`, `herdr-remote`, `forward`, `terminfo`, `shell` / `status`, 空 `NAME` 拒否, 引用符付きリソース正規化の回帰テスト（9 件）を追加（計 105 件、全件 PASS）。
 - **後続フェーズへの反映**:
-  - **Phase 3 の全課題（#13, #24, #25, #21）が完了**。
-  - 次の着手推奨は **Phase 4 の #17**（Makefile のシェル処理を scripts/ に移して shellcheck の対象にする）。
+  - 次の着手推奨は **Phase 4 の #12**（VM 再作成時の認証情報・署名鍵バックアップ支援）。
 
 ---
 
@@ -116,7 +114,7 @@ flowchart TD
     end
 
     subgraph Phase4["Phase 4: 運用 DX & コードベース保守"]
-        I17["#17 Makefile シェル処理スクリプト化"]
+        I17["#17 Makefile シェル処理スクリプト化 ✅"]
         I12["#12 認証・署名鍵バックアップ"]
         I20["#20 Git 署名鍵 GitHub 連携"]
         I19["#19 make update / versions"]
@@ -145,8 +143,8 @@ flowchart TD
 
     classDef done fill:#d4edda,stroke:#28a745,color:#155724
     classDef next fill:#fff3cd,stroke:#ffc107,color:#856404
-    class I15,I7,I8,I6,I16,I22,I10,I9,I18,I13,I24,I25,I21 done
-    class I17 next
+    class I15,I7,I8,I6,I16,I22,I10,I9,I18,I13,I24,I25,I21,I17 done
+    class I12 next
 ```
 
 ### Phase 1: Quick Wins & エージェント摩擦解消（即効性） — ✅ 完了（2026-10-11）
@@ -174,10 +172,10 @@ flowchart TD
   - ✅ **#25 [Provisioning]**: probe および provision スクリプトでの `--version` 起動確認・公式リポジトリ確認・Git 署名設定の診断強化
   - ✅ **#21 [Provisioning]**: `coding-sandbox.yaml` の `param`（`copilotVersion`, `miseVersion`）や `.env` からツールバージョンを指定可能にし、完全一致検証と暗黙フォールバック拒否を実装
 
-### Phase 4: 運用 DX & コードベース保守（利便性）
+### Phase 4: 運用 DX & コードベース保守（利便性） — 進行中
 - **目的**: 開発者が日常的に VM を破棄・再作成しやすくし、Makefile のメンテナンス性を高める。
 - **対象**:
-  - **#17 [CI]**: Makefile 内の複雑なインラインスクリプトを `scripts/` に切り出して shellcheck 対象化
+  - ✅ **#17 [CI]**: Makefile 内の複雑なインラインスクリプトを `scripts/` に切り出して shellcheck 対象化
   - **#12 [DX]** & **#20 [DX]**: `make backup-auth`, `make restore-auth`, `make register-key` 等で認証・署名鍵の退避・登録を支援
   - **#19 [DX]**: `make update`, `make versions` の追加
   - **#11 [DX]**: `make ssh-config` の追加と Remote-SSH ドキュメントの拡充

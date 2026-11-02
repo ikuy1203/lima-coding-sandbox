@@ -98,9 +98,19 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── copilot-cli.sh         # mode: user
 │   ├── mise.sh                # mode: user
 │   └── agent-instructions.sh  # mode: user    エージェント向け指示ファイル（既定は無効）
-├── scripts/
+├── scripts/                   # Makefile から呼び出す操作スクリプトと、検査・テストスクリプト
+│   ├── lib.sh                 # 共通関数（インスタンスの状態取得、入力値の正規化、NAME 検証）
+│   ├── create.sh              # make create（マウント検証・入力値正規化・インスタンス作成）
+│   ├── start.sh               # make start（マウント検証・インスタンス起動）
+│   ├── shell.sh               # make shell / herdr / pubkey / logs（インスタンス内でシェルまたはコマンドを実行）
+│   ├── status.sh              # make status（インスタンス状態表示）
+│   ├── stop.sh                # make stop（インスタンス停止）
+│   ├── delete.sh              # make delete（確認付きインスタンス削除）
+│   ├── herdr-remote.sh        # make herdr-remote（ホストの herdr から VM へリモート接続）
+│   ├── forward.sh             # make forward（VM のポートをホストへ SSH 転送）
+│   ├── terminfo.sh            # make terminfo（ホストの terminfo を検証して VM へコピー）
 │   ├── lint.sh                # テンプレートとスクリプトの検査（CI でも実行する）
-│   └── test.sh                # プロビジョニングスクリプトと Makefile の回帰テスト（CI でも実行する）
+│   └── test.sh                # プロビジョニングスクリプトと Makefile / scripts の回帰テスト（CI でも実行する）
 └── .github/
     ├── dependabot.yml         # GitHub Actions のアクションの更新を週 1 回確認する
     └── workflows/ci.yml       # GitHub Actions（lint・回帰テスト・実 VM 起動テストを実行する）
