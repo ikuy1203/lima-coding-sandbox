@@ -41,6 +41,15 @@ count_dir_entries() {
   find "$1" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' '
 }
 
+get_octal_perm() {
+  local out
+  if out=$(stat -c '%a' "$1" 2>/dev/null); then
+    printf '%s' "${out}"
+  elif out=$(stat -f '%Lp' "$1" 2>/dev/null); then
+    printf '%s' "${out}"
+  fi
+}
+
 # -----------------------------------------------------------------------------
 # Test Suite 1: provision/git-config.sh
 # -----------------------------------------------------------------------------
@@ -2671,12 +2680,12 @@ EOF
 
   # 権限確認 (親ディレクトリ 0755 維持、退避ディレクトリ 0700 / ファイル 0600)
   local parent_perm="" bdir_perm="" key_perm="" gh_perm="" copilot_perm=""
-  parent_perm=$(stat -f '%Lp' "${backup_parent}" 2>/dev/null || stat -c '%a' "${backup_parent}" 2>/dev/null || true)
+  parent_perm=$(get_octal_perm "${backup_parent}")
   if [ -d "${backup_dest}" ]; then
-    bdir_perm=$(stat -f '%Lp' "${backup_dest}" 2>/dev/null || stat -c '%a' "${backup_dest}" 2>/dev/null || true)
-    key_perm=$(stat -f '%Lp' "${backup_dest}/.ssh/id_ed25519_signing" 2>/dev/null || stat -c '%a' "${backup_dest}/.ssh/id_ed25519_signing" 2>/dev/null || true)
-    gh_perm=$(stat -f '%Lp' "${backup_dest}/.config/gh/hosts.yml" 2>/dev/null || stat -c '%a' "${backup_dest}/.config/gh/hosts.yml" 2>/dev/null || true)
-    copilot_perm=$(stat -f '%Lp' "${backup_dest}/.copilot/config.json" 2>/dev/null || stat -c '%a' "${backup_dest}/.copilot/config.json" 2>/dev/null || true)
+    bdir_perm=$(get_octal_perm "${backup_dest}")
+    key_perm=$(get_octal_perm "${backup_dest}/.ssh/id_ed25519_signing")
+    gh_perm=$(get_octal_perm "${backup_dest}/.config/gh/hosts.yml")
+    copilot_perm=$(get_octal_perm "${backup_dest}/.copilot/config.json")
   fi
 
   # 2) Stopped 状態やパスフレーズ保護鍵、シンボリックリンク混入時に失敗し、既存の backup_dest を壊さず、recreate 連鎖時は delete に進まないこと
@@ -2789,6 +2798,22 @@ EOF
   local lima_calls_on_corrupt_restore
   lima_calls_on_corrupt_restore=$(wc -l < "${lima_log}" | tr -d ' ')
 
+  local passphrase_restore_dir="${test_dir}/passphrase_restore_backup"
+  mkdir -p "${passphrase_restore_dir}/.ssh"
+  chmod 0700 "${passphrase_restore_dir}" "${passphrase_restore_dir}/.ssh"
+  ssh-keygen -q -t ed25519 -N 'restorepass' -C "pass@restore" -f "${passphrase_restore_dir}/.ssh/id_ed25519_signing"
+  chmod 0600 "${passphrase_restore_dir}/.ssh/id_ed25519_signing" "${passphrase_restore_dir}/.ssh/id_ed25519_signing.pub"
+  : > "${lima_log}"
+  local passphrase_restore_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_host_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" restore-auth ENV_FILE="${empty_env}" AUTH_BACKUP_DIR="${passphrase_restore_dir}" >/dev/null 2>&1
+  ) || passphrase_restore_rc=$?
+  local lima_calls_on_passphrase_restore
+  lima_calls_on_passphrase_restore=$(wc -l < "${lima_log}" | tr -d ' ')
+
   # --check が退避先内のファイル権限を変更しない（副作用がない）ことを確認
   touch "${backup_dest}/unrelated.txt"
   chmod 0644 "${backup_dest}/unrelated.txt"
@@ -2798,16 +2823,21 @@ EOF
     AUTH_BACKUP_DIR="${backup_dest}" bash "${REPO_ROOT}/scripts/restore-auth.sh" --check >/dev/null 2>&1
   )
   local check_unrelated_perm
-  check_unrelated_perm=$(stat -f '%Lp' "${backup_dest}/unrelated.txt" 2>/dev/null || stat -c '%a' "${backup_dest}/unrelated.txt" 2>/dev/null || true)
+  check_unrelated_perm=$(get_octal_perm "${backup_dest}/unrelated.txt")
   rm -f "${backup_dest}/unrelated.txt"
 
   # 新しく再作成された VM のホームディレクトリを模擬（初回起動で別の鍵が生成され、allowed_signers と copilot-instructions.md がある状態）
+  # 同一メールアドレスの別端末鍵 (other_device_pub) が併存している場合も、一時鍵のみ置換され別端末鍵は保持されることを確認
   local guest_home_2="${test_dir}/guest_home_2"
   mkdir -p "${guest_home_2}/.ssh" "${guest_home_2}/.config/git" "${guest_home_2}/.config/gh" "${guest_home_2}/.copilot"
   ssh-keygen -q -t ed25519 -N '' -C "throwaway@lima" -f "${guest_home_2}/.ssh/id_ed25519_signing"
-  local throwaway_pub
+  local throwaway_pub other_device_pub
   throwaway_pub=$(awk '{print $1, $2}' "${guest_home_2}/.ssh/id_ed25519_signing.pub")
-  printf 'restored@example.com namespaces="git" %s\n' "${throwaway_pub}" > "${guest_home_2}/.config/git/allowed_signers"
+  other_device_pub="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherDeviceKeyBlobForSameEmail123456"
+  {
+    printf 'restored@example.com namespaces="git" %s\n' "${other_device_pub}"
+    printf 'restored@example.com namespaces="git" %s\n' "${throwaway_pub}"
+  } > "${guest_home_2}/.config/git/allowed_signers"
   printf 'keep-this-agent-instructions\n' > "${guest_home_2}/.copilot/copilot-instructions.md"
 
   local real_git
@@ -2843,6 +2873,20 @@ EOF
   ) || gh_child_symlink_rc=$?
   rm -f "${guest_home_2}/.config/gh/hosts.yml"
 
+  # commit.gpgsign に不正な真偽値が設定されている場合はエラー終了すること
+  HOME="${guest_home_2}" GIT_CONFIG_GLOBAL="${guest_home_2}/.gitconfig" "${real_git}" config --global commit.gpgsign "not-a-bool"
+  local invalid_gpgsign_restore_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_host_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${guest_home_2}"
+    export STUB_LIMA_GUEST_PATH="${guest_bin}:${default_path}:${PATH}"
+    make -f "${REPO_ROOT}/Makefile" restore-auth ENV_FILE="${empty_env}" AUTH_BACKUP_DIR="${backup_dest}" >/dev/null 2>&1
+  ) || invalid_gpgsign_restore_rc=$?
+  HOME="${guest_home_2}" GIT_CONFIG_GLOBAL="${guest_home_2}/.gitconfig" "${real_git}" config --global commit.gpgsign true
+
   local restore_ok=0
   (
     export PATH="${fake_bin}:${PATH}"
@@ -2865,11 +2909,14 @@ EOF
 
   if [ "${missing_restore_rc}" -ne 0 ] && [ "${lima_calls_on_restore_check_fail}" -eq 0 ] && \
      [ "${corrupt_restore_rc}" -ne 0 ] && [ "${lima_calls_on_corrupt_restore}" -eq 0 ] && \
+     [ "${passphrase_restore_rc}" -ne 0 ] && [ "${lima_calls_on_passphrase_restore}" -eq 0 ] && \
      [ "${check_unrelated_perm}" = "644" ] && \
      [ "${gh_child_symlink_rc}" -ne 0 ] && [ ! -e "/tmp/outside_hosts.yml" ] && \
+     [ "${invalid_gpgsign_restore_rc}" -ne 0 ] && \
      [ "${restore_ok}" -eq 1 ] && \
      [ "${restored_pub}" = "${expected_pub}" ] && \
-     [ "${signers_lines}" -eq 1 ] && \
+     [ "${signers_lines}" -eq 2 ] && \
+     printf '%s\n' "${signers_content}" | grep -qF "${other_device_pub}" && \
      printf '%s\n' "${signers_content}" | grep -qF "${expected_pub}" && \
      ! printf '%s\n' "${signers_content}" | grep -qF "${throwaway_pub}" && \
      grep -qx "auth setup-git" "${gh_setup_log}" && \
@@ -2878,7 +2925,7 @@ EOF
      grep -qx "keep-this-agent-instructions" "${guest_home_2}/.copilot/copilot-instructions.md"; then
     log_pass "${suite}: make restore-auth pre-start check, key/signers restoration, signing verification, and gh setup-git"
   else
-    log_fail "${suite}: make restore-auth checks failed (missing_rc=${missing_restore_rc}, calls=${lima_calls_on_restore_check_fail}, perm=${check_unrelated_perm}, gh_sym=${gh_child_symlink_rc}, restore_ok=${restore_ok}, lines=${signers_lines})"
+    log_fail "${suite}: make restore-auth checks failed (missing_rc=${missing_restore_rc}, calls=${lima_calls_on_restore_check_fail}, pass_rc=${passphrase_restore_rc}, perm=${check_unrelated_perm}, gh_sym=${gh_child_symlink_rc}, gpg_rc=${invalid_gpgsign_restore_rc}, restore_ok=${restore_ok}, lines=${signers_lines})"
   fi
 }
 

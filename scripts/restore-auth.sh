@@ -157,6 +157,18 @@ tar -C "${BACKUP_DIR}" -cf - "${items[@]}" | limactl shell "${NAME}" bash -c '
       echo >&2 "エラー: VM 内の ~/.ssh/id_ed25519_signing* がシンボリックリンクのため復元できません"
       exit 1
     fi
+    prev_key_type=""
+    prev_key_blob=""
+    if [ -s "${key}.pub" ]; then
+      prev_key_type=$(awk "{print \$1}" "${key}.pub" 2>/dev/null || true)
+      prev_key_blob=$(awk "{print \$2}" "${key}.pub" 2>/dev/null || true)
+    elif [ -s "${key}" ]; then
+      prev_derived=$(ssh-keygen -y -P "" -f "${key}" 2>/dev/null || true)
+      if [ -n "${prev_derived}" ]; then
+        prev_key_type=$(printf "%s\n" "${prev_derived}" | awk "{print \$1}")
+        prev_key_blob=$(printf "%s\n" "${prev_derived}" | awk "{print \$2}")
+      fi
+    fi
     install -m 0700 -d "${HOME}/.ssh"
     install -m 0600 "${stage_dir}/.ssh/id_ed25519_signing" "${key}"
     install -m 0644 "${stage_dir}/.ssh/id_ed25519_signing.pub" "${key}.pub"
@@ -168,8 +180,10 @@ tar -C "${BACKUP_DIR}" -cf - "${items[@]}" | limactl shell "${NAME}" bash -c '
     default_key_cmd=$(git config --includes --global --get gpg.ssh.defaultKeyCommand 2>/dev/null || true)
 
     if [ -z "${default_key_cmd}" ] && [ "${gpg_format}" = "ssh" ] && [ "${signing_key}" = "${key}" ]; then
-      key_pattern=$(awk "{print \$1, \$2}" "${key}.pub")
-      if [ -n "${configured_email}" ] && [ -n "${key_pattern}" ]; then
+      key_type=$(awk "{print \$1}" "${key}.pub")
+      key_blob=$(awk "{print \$2}" "${key}.pub")
+      key_pattern="${key_type} ${key_blob}"
+      if [ -n "${configured_email}" ] && [ -n "${key_type}" ] && [ -n "${key_blob}" ]; then
         configured_signers=$(git config --includes --global --get gpg.ssh.allowedSignersFile 2>/dev/null || true)
         if [ -n "${configured_signers}" ]; then
           allowed_signers="${configured_signers/#\~/$HOME}"
@@ -180,8 +194,13 @@ tar -C "${BACKUP_DIR}" -cf - "${items[@]}" | limactl shell "${NAME}" bash -c '
         entry="${configured_email} namespaces=\"git\" ${key_pattern}"
         if [ -f "${allowed_signers}" ]; then
           tmp_signers="${stage_dir}/allowed_signers.tmp"
-          awk -v email="${configured_email}" -v new_entry="${entry}" "
-            \$1 == email && \$2 == \"namespaces=\\\"git\\\"\" {
+          awk -v email="${configured_email}" \
+              -v key_type="${key_type}" \
+              -v key_blob="${key_blob}" \
+              -v prev_type="${prev_key_type}" \
+              -v prev_blob="${prev_key_blob}" \
+              -v new_entry="${entry}" "
+            \$1 == email && \$2 == \"namespaces=\\\"git\\\"\" && ((\$3 == key_type && \$4 == key_blob) || (prev_type != \"\" && \$3 == prev_type && \$4 == prev_blob)) {
               if (!replaced) {
                 print new_entry
                 replaced = 1
