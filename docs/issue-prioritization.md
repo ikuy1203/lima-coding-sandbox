@@ -2,7 +2,7 @@
 
 本ドキュメントは、`lima-coding-sandbox` の Issue（計 21 件、#6〜#25・#29）について、プロジェクトの目的・セキュリティ・開発効率の観点から評価基準を定め、実装の優先順位とロードマップを整理したものです。
 
-> **最終更新: 2026-11-03** — 完了 14 件 / 未解決 7 件。Phase 1、Phase 2、Phase 3 に続き、**Phase 4 の #17** が完了しました（次は Phase 4 の #12）。
+> **最終更新: 2026-11-05** — 完了 15 件 / 未解決 6 件。Phase 1、Phase 2、Phase 3、#17 に続き、**Phase 4 の #12** が完了しました（次は Phase 4 の #20）。
 
 ---
 
@@ -15,7 +15,7 @@
 | Phase 1: Quick Wins & エージェント摩擦解消 | #15, #7, #8, #6, #16, #22 | 6 / 6 | ✅ 完了 |
 | Phase 2: セキュリティ隔離 & 起動高速化 | #10, #9, #18 | 3 / 3 | ✅ 完了 |
 | Phase 3: プロビジョニング堅牢化 & CI 自動テスト | #13, #24, #25, #21 | 4 / 4 | ✅ 完了 |
-| Phase 4: 運用 DX & コードベース保守 | #17, #12, #20, #19, #11 | 1 / 5 | 進行中 |
+| Phase 4: 運用 DX & コードベース保守 | #17, #12, #20, #19, #11 | 2 / 5 | 進行中 |
 | Phase 5: ドキュメント再編 & 実験的機能 | #23, #14, #29 | 0 / 3 | 未着手 |
 
 ### 完了済み Issue
@@ -36,16 +36,18 @@
 | [#25](https://github.com/ikuy1203/lima-coding-sandbox/issues/25) | [Provisioning] インストール済み判定と probes を配布元・実動作の確認に強化する | [#44](https://github.com/ikuy1203/lima-coding-sandbox/pull/44) | 2026-11-01 | GitHub CLI の公式 apt リポジトリ配布元・実動作検証、CLI ツール（herdr, agy, copilot, mise）のタイムアウト付き `--version` 実動作確認と破損時再導入、Git 署名鍵整合性と一時リポジトリでの署名・検証診断、および `coding-sandbox.yaml` probes の配布元・実動作・署名検証強化 |
 | [#21](https://github.com/ikuy1203/lima-coding-sandbox/issues/21) | [Provisioning] サードパーティツールのバージョンを param で固定できるようにする | [#45](https://github.com/ikuy1203/lima-coding-sandbox/pull/45) | 2026-11-01 | `copilotVersion`・`miseVersion` パラメータを追加し、公式 install スクリプトによる指定版導入、導入後のバージョン一致検証、暗黙フォールバックの防止、および再起動時の手動更新版維持を実装。Makefile・.env.example・probes・README を整備 |
 | [#17](https://github.com/ikuy1203/lima-coding-sandbox/issues/17) | [CI] Makefile のシェル処理を scripts/ に移して shellcheck の対象にする | [#46](https://github.com/ikuy1203/lima-coding-sandbox/pull/46) | 2026-11-03 | `Makefile` の各ターゲット処理を `scripts/{lib,create,start,shell,status,stop,delete,herdr-remote,forward,terminfo}.sh` に分離して `shellcheck` の検査対象化。`scripts/test.sh` に `lib.sh` 単体テストと各スクリプトの回帰テストを追加 |
+| [#12](https://github.com/ikuy1203/lima-coding-sandbox/issues/12) | [DX] VM 再作成（make recreate）時の認証情報・署名鍵バックアップ支援 | - | 2026-11-05 | `make backup-auth` / `make restore-auth`（`scripts/backup-auth.sh`, `scripts/restore-auth.sh`）を追加し、認証情報（gh, copilot）および Git 署名鍵を安全に退避・復元。`make delete` で未 push データと退避案内の警告を表示。`scripts/test.sh` に回帰テストを追加 |
 
 ### 前回からの変更点
 
-- **#17（Makefile のシェル処理を scripts/ に移して shellcheck の対象にする）が完了**:
-  - 共通関数（`get_status`, `normalize`, `resolve_name`）を `scripts/lib.sh` に分離。
-  - `create`, `start`, `shell` / `herdr` / `pubkey` / `logs`（`shell.sh`）, `status`, `stop`, `delete`, `herdr-remote`, `forward`, `_check-terminfo` / `terminfo` のシェル処理を `scripts/` 配下のスクリプトに分離し、`scripts/lint.sh` の `shellcheck` で全スクリプトを静的検査。
-  - `Makefile` は `.env` の読み込み・変数の `export`・`help` およびスクリプト呼び出しのみに簡素化。
-  - `scripts/test.sh` に `lib.sh` の単体テストおよび `stop`, `delete`, `herdr-remote`, `forward`, `terminfo`, `shell` / `status`, 空 `NAME` 拒否, 引用符付きリソース正規化の回帰テスト（9 件）を追加（計 105 件、全件 PASS）。
+- **#12（VM 再作成時の認証情報・署名鍵バックアップ支援）が完了**:
+  - `make backup-auth`（`scripts/backup-auth.sh`）で VM 内の Git コミット署名鍵（`~/.ssh/id_ed25519_signing*`）、`~/.config/gh`、`~/.copilot/config.json` をホスト側の安全なディレクトリ（既定: `~/.local/share/lima-coding-sandbox/auth-backup/<NAME>`、0700/0600）に安全に退避。
+  - `make restore-auth`（`scripts/restore-auth.sh`）で退避した鍵・認証設定を復元し、`allowed_signers` の更新・署名検証および `gh auth setup-git` による Git 認証連携を再設定。
+  - `scripts/lib.sh` に `resolve_auth_backup_dir` を追加し、リポジトリ内やシンボリックリンクなどの危険なパス指定を拒否。
+  - `scripts/delete.sh` の削除確認プロンプトを強化し、未 push の作業データ消失と `make backup-auth` の注意喚起を表示。
+  - `README.md` に再作成時の認証・作業データ保護手順を追記し、`scripts/test.sh` に単体・回帰テストを追加（計 108 件、全件 PASS）。
 - **後続フェーズへの反映**:
-  - 次の着手推奨は **Phase 4 の #12**（VM 再作成時の認証情報・署名鍵バックアップ支援）。
+  - 次の着手推奨は **Phase 4 の #20**（Git の署名鍵の GitHub への登録・削除をホストの gh で支援する）。
 
 ---
 
@@ -115,7 +117,7 @@ flowchart TD
 
     subgraph Phase4["Phase 4: 運用 DX & コードベース保守"]
         I17["#17 Makefile シェル処理スクリプト化 ✅"]
-        I12["#12 認証・署名鍵バックアップ"]
+        I12["#12 認証・署名鍵バックアップ ✅"]
         I20["#20 Git 署名鍵 GitHub 連携"]
         I19["#19 make update / versions"]
         I11["#11 Remote-SSH 連携支援"]
@@ -143,8 +145,8 @@ flowchart TD
 
     classDef done fill:#d4edda,stroke:#28a745,color:#155724
     classDef next fill:#fff3cd,stroke:#ffc107,color:#856404
-    class I15,I7,I8,I6,I16,I22,I10,I9,I18,I13,I24,I25,I21,I17 done
-    class I12 next
+    class I15,I7,I8,I6,I16,I22,I10,I9,I18,I13,I24,I25,I21,I17,I12 done
+    class I20 next
 ```
 
 ### Phase 1: Quick Wins & エージェント摩擦解消（即効性） — ✅ 完了（2026-10-11）
@@ -176,7 +178,8 @@ flowchart TD
 - **目的**: 開発者が日常的に VM を破棄・再作成しやすくし、Makefile のメンテナンス性を高める。
 - **対象**:
   - ✅ **#17 [CI]**: Makefile 内の複雑なインラインスクリプトを `scripts/` に切り出して shellcheck 対象化
-  - **#12 [DX]** & **#20 [DX]**: `make backup-auth`, `make restore-auth`, `make register-key` 等で認証・署名鍵の退避・登録を支援
+  - ✅ **#12 [DX]**: `make backup-auth`, `make restore-auth` で認証・署名鍵の退避・復元を支援
+  - **#20 [DX]**: ホスト側の `gh` を利用した Git 署名鍵の GitHub 登録・削除支援
   - **#19 [DX]**: `make update`, `make versions` の追加
   - **#11 [DX]**: `make ssh-config` の追加と Remote-SSH ドキュメントの拡充
 
