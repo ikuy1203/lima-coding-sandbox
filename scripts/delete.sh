@@ -16,7 +16,11 @@ if [ -z "${st}" ]; then
 fi
 
 if [ "${yes_val}" != 1 ]; then
-  printf 'インスタンス %s を削除します。VM 内のファイルと認証情報もすべて消えます。よろしいですか？ [y/N] ' "${NAME}"
+  printf '%s\n' \
+    "インスタンス ${NAME} を削除します。" \
+    "- VM 内のファイル（未 push のコミット・未コミットの変更・Git 管理外の作業データ）はすべて消えます（clone し直すだけでは復元できません）" \
+    "- 認証情報（gh・copilot）と Git 署名鍵を引き継ぐ場合は、削除前に make backup-auth を実行してください（README.md を参照）"
+  printf 'よろしいですか？ [y/N] '
   read -r answer
   case "${answer}" in
     [yY]*) ;;

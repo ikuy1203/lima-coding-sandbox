@@ -17,7 +17,7 @@ FAIL_COUNT=0
 # ホストの Git 設定・実行時環境変数との完全な隔離
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_SYSTEM=/dev/null
-unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_DIR GIT_WORK_TREE
+unset GIT_CONFIG_GLOBAL XDG_CONFIG_HOME GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_DIR GIT_WORK_TREE
 
 # 全テスト用の一時ディレクトリ（異常終了時も含め EXIT trap で確実に削除）
 MASTER_TEST_DIR=$(mktemp -d)
@@ -1886,6 +1886,14 @@ case "$cmd" in
     if [ "${STUB_LIMA_SHELL_FAIL:-0}" = "1" ]; then
       exit 1
     fi
+    if [ -n "${STUB_LIMA_GUEST_HOME:-}" ]; then
+      shift 2
+      HOME="${STUB_LIMA_GUEST_HOME}" \
+        XDG_CONFIG_HOME="${STUB_LIMA_GUEST_HOME}/.config" \
+        GIT_CONFIG_GLOBAL="${STUB_LIMA_GUEST_HOME}/.gitconfig" \
+        PATH="${STUB_LIMA_GUEST_PATH:-${PATH}}" "$@"
+      exit $?
+    fi
     exit 0
     ;;
   *)
@@ -2349,14 +2357,14 @@ EOF
   local del_nonexistent_calls
   del_nonexistent_calls=$(grep -cx "delete" "${lima_log}" || true)
 
-  # 確認プロンプトで n を入力して中止
+  # 確認プロンプトで n を入力して中止（未 push 作業データおよび make backup-auth の案内表示も検証）
   : > "${lima_log}"
-  local del_aborted=0
-  (
+  local del_aborted=0 del_prompt_out=""
+  del_prompt_out=$(
     export PATH="${fake_bin}:${PATH}"
     export STUB_LIMACTL_LOG="${lima_log}"
     export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Stopped"
-    printf 'n\n' | make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" >/dev/null 2>&1
+    printf 'n\n' | make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" 2>&1
   ) || del_aborted=1
   local del_aborted_calls
   del_aborted_calls=$(grep -cx "delete" "${lima_log}" || true)
@@ -2401,6 +2409,8 @@ EOF
 
   if [ "${del_nonexistent_ok}" -eq 1 ] && [ "${del_nonexistent_calls}" -eq 0 ] && \
      [ "${del_aborted}" -eq 1 ] && [ "${del_aborted_calls}" -eq 0 ] && \
+     printf '%s\n' "${del_prompt_out}" | grep -q "clone し直すだけでは復元できません" && \
+     printf '%s\n' "${del_prompt_out}" | grep -q "make backup-auth" && \
      [ "${del_confirmed_ok}" -eq 1 ] && [ "${del_confirmed_stops}" -eq 1 ] && [ "${del_confirmed_deletes}" -eq 1 ] && \
      [ "${del_stop_fail_rc}" -ne 0 ] && [ "${del_after_stop_fail}" -eq 0 ] && \
      [ "${del_yes_ok}" -eq 1 ] && [ "${del_yes_deletes}" -eq 1 ]; then
@@ -2590,6 +2600,285 @@ EOF
     log_pass "${suite}: make terminfo pre-start check, tic arguments, and tic failure propagation"
   else
     log_fail "${suite}: make terminfo check or tic piping failed"
+  fi
+
+  # 4.17 scripts/lib.sh: resolve_auth_backup_dir の単体テスト（既定パス・~展開・リポジトリ内拒否・シンボリックリンク拒否・危険パス拒否）
+  log_test "${suite}: scripts/lib.sh resolve_auth_backup_dir unit tests"
+  local fake_host_home="${test_dir}/host_home"
+  mkdir -p "${fake_host_home}"
+  local fake_host_home_phys
+  fake_host_home_phys=$(cd "${fake_host_home}" && pwd -P)
+
+  local def_bdir tilde_bdir
+  def_bdir=$(HOME="${fake_host_home}" AUTH_BACKUP_DIR="" resolve_auth_backup_dir "coding-sandbox")
+  tilde_bdir=$(HOME="${fake_host_home}" AUTH_BACKUP_DIR=' " ~/my-backups/sb2/ " ' resolve_auth_backup_dir "sb2")
+
+  local repo_sub_rc=0 repo_root_rc=0 repo_link_rc=0 target_link_rc=0 root_dir_rc=0 home_dir_rc=0 tmp_dir_rc=0
+  (HOME="${fake_host_home}" AUTH_BACKUP_DIR="${REPO_ROOT}/auth-backup" resolve_auth_backup_dir "coding-sandbox" >/dev/null 2>&1) || repo_sub_rc=$?
+  (HOME="${fake_host_home}" AUTH_BACKUP_DIR="${REPO_ROOT}" resolve_auth_backup_dir "coding-sandbox" >/dev/null 2>&1) || repo_root_rc=$?
+
+  ln -s "${REPO_ROOT}" "${test_dir}/repo_symlink"
+  (HOME="${fake_host_home}" AUTH_BACKUP_DIR="${test_dir}/repo_symlink/sub" resolve_auth_backup_dir "coding-sandbox" >/dev/null 2>&1) || repo_link_rc=$?
+
+  mkdir -p "${test_dir}/real_bdir"
+  ln -s "${test_dir}/real_bdir" "${test_dir}/bdir_symlink"
+  (HOME="${fake_host_home}" AUTH_BACKUP_DIR="${test_dir}/bdir_symlink" resolve_auth_backup_dir "coding-sandbox" >/dev/null 2>&1) || target_link_rc=$?
+
+  (HOME="${fake_host_home}" AUTH_BACKUP_DIR="/" resolve_auth_backup_dir "coding-sandbox" >/dev/null 2>&1) || root_dir_rc=$?
+  (HOME="${fake_host_home}" AUTH_BACKUP_DIR="~" resolve_auth_backup_dir "coding-sandbox" >/dev/null 2>&1) || home_dir_rc=$?
+  (HOME="${fake_host_home}" AUTH_BACKUP_DIR="/tmp" resolve_auth_backup_dir "coding-sandbox" >/dev/null 2>&1) || tmp_dir_rc=$?
+
+  if [ "${def_bdir}" = "${fake_host_home_phys}/.local/share/lima-coding-sandbox/auth-backup/coding-sandbox" ] && \
+     [ "${tilde_bdir}" = "${fake_host_home_phys}/my-backups/sb2" ] && \
+     [ "${repo_sub_rc}" -ne 0 ] && [ "${repo_root_rc}" -ne 0 ] && [ "${repo_link_rc}" -ne 0 ] && \
+     [ "${target_link_rc}" -ne 0 ] && [ "${root_dir_rc}" -ne 0 ] && [ "${home_dir_rc}" -ne 0 ] && [ "${tmp_dir_rc}" -ne 0 ]; then
+    log_pass "${suite}: scripts/lib.sh resolve_auth_backup_dir unit tests"
+  else
+    log_fail "${suite}: scripts/lib.sh resolve_auth_backup_dir unit tests failed"
+  fi
+
+  # 4.18 make backup-auth (scripts/backup-auth.sh): 正常退避・親ディレクトリ権限保持・権限検証・公開鍵自動導出・パスフレーズ鍵拒否・異常時既存バックアップ保護・recreate 連鎖の中断
+  log_test "${suite}: make backup-auth normal backup, permissions, pubkey derivation, and failure safety"
+  local guest_home_1="${test_dir}/guest_home_1"
+  local backup_parent="${test_dir}/auth_backup_store"
+  local backup_dest="${backup_parent}/coding-sandbox"
+  local default_path
+  default_path=$(command -p getconf PATH 2>/dev/null || echo "/usr/bin:/bin:/usr/sbin:/sbin")
+  local guest_bin="${test_dir}/guest_bin"
+  mkdir -p "${guest_home_1}/.ssh" "${guest_home_1}/.config/gh" "${guest_home_1}/.copilot" "${guest_bin}" "${backup_parent}"
+  chmod 0755 "${backup_parent}"
+
+  ssh-keygen -q -t ed25519 -N '' -C "test-backup@lima" -f "${guest_home_1}/.ssh/id_ed25519_signing"
+  printf 'github.com:\n    oauth_token: gho_testtoken123\n    user: testuser\n' > "${guest_home_1}/.config/gh/hosts.yml"
+  printf '{"oauth_token":"copilot_token_abc"}\n' > "${guest_home_1}/.copilot/config.json"
+  printf 'managed instructions\n' > "${guest_home_1}/.copilot/copilot-instructions.md"
+
+  local orig_pub
+  orig_pub=$(cat "${guest_home_1}/.ssh/id_ed25519_signing.pub")
+
+  # 1) 公開鍵 (.pub) が欠けている状態でも秘密鍵から導出して退避でき、既存の親ディレクトリ権限 (0755) を変更しないこと
+  rm -f "${guest_home_1}/.ssh/id_ed25519_signing.pub"
+  local backup_ok=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_host_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${guest_home_1}"
+    export STUB_LIMA_GUEST_PATH="${guest_bin}:${default_path}:${PATH}"
+    make -f "${REPO_ROOT}/Makefile" backup-auth ENV_FILE="${empty_env}" AUTH_BACKUP_DIR="${backup_dest}" >/dev/null 2>&1
+  ) && backup_ok=1
+
+  # 権限確認 (親ディレクトリ 0755 維持、退避ディレクトリ 0700 / ファイル 0600)
+  local parent_perm="" bdir_perm="" key_perm="" gh_perm="" copilot_perm=""
+  parent_perm=$(stat -f '%Lp' "${backup_parent}" 2>/dev/null || stat -c '%a' "${backup_parent}" 2>/dev/null || true)
+  if [ -d "${backup_dest}" ]; then
+    bdir_perm=$(stat -f '%Lp' "${backup_dest}" 2>/dev/null || stat -c '%a' "${backup_dest}" 2>/dev/null || true)
+    key_perm=$(stat -f '%Lp' "${backup_dest}/.ssh/id_ed25519_signing" 2>/dev/null || stat -c '%a' "${backup_dest}/.ssh/id_ed25519_signing" 2>/dev/null || true)
+    gh_perm=$(stat -f '%Lp' "${backup_dest}/.config/gh/hosts.yml" 2>/dev/null || stat -c '%a' "${backup_dest}/.config/gh/hosts.yml" 2>/dev/null || true)
+    copilot_perm=$(stat -f '%Lp' "${backup_dest}/.copilot/config.json" 2>/dev/null || stat -c '%a' "${backup_dest}/.copilot/config.json" 2>/dev/null || true)
+  fi
+
+  # 2) Stopped 状態やパスフレーズ保護鍵、シンボリックリンク混入時に失敗し、既存の backup_dest を壊さず、recreate 連鎖時は delete に進まないこと
+  local stopped_backup_rc=0 passphrase_backup_rc=0 symlink_backup_rc=0 chain_abort_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_host_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Stopped"
+    export STUB_LIMA_GUEST_HOME="${guest_home_1}"
+    make -f "${REPO_ROOT}/Makefile" backup-auth ENV_FILE="${empty_env}" AUTH_BACKUP_DIR="${backup_dest}" >/dev/null 2>&1
+  ) || stopped_backup_rc=$?
+
+  # パスフレーズ付き鍵および破損した秘密鍵は非対話署名に使えないため拒否され、既存バックアップが維持されること
+  local corrupt_backup_rc=0
+  mv "${guest_home_1}/.ssh/id_ed25519_signing" "${guest_home_1}/.ssh/id_ed25519_signing.nopass"
+  mv "${guest_home_1}/.ssh/id_ed25519_signing.pub" "${guest_home_1}/.ssh/id_ed25519_signing.pub.nopass"
+  ssh-keygen -q -t ed25519 -N 'secretpass' -C "pass@lima" -f "${guest_home_1}/.ssh/id_ed25519_signing"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_host_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${guest_home_1}"
+    export STUB_LIMA_GUEST_PATH="${guest_bin}:${default_path}:${PATH}"
+    make -f "${REPO_ROOT}/Makefile" backup-auth ENV_FILE="${empty_env}" AUTH_BACKUP_DIR="${backup_dest}" >/dev/null 2>&1
+  ) || passphrase_backup_rc=$?
+  printf 'corrupted-private-key-content\n' > "${guest_home_1}/.ssh/id_ed25519_signing"
+  cp "${guest_home_1}/.ssh/id_ed25519_signing.pub.nopass" "${guest_home_1}/.ssh/id_ed25519_signing.pub"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_host_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${guest_home_1}"
+    export STUB_LIMA_GUEST_PATH="${guest_bin}:${default_path}:${PATH}"
+    make -f "${REPO_ROOT}/Makefile" backup-auth ENV_FILE="${empty_env}" AUTH_BACKUP_DIR="${backup_dest}" >/dev/null 2>&1
+  ) || corrupt_backup_rc=$?
+  mv "${guest_home_1}/.ssh/id_ed25519_signing.nopass" "${guest_home_1}/.ssh/id_ed25519_signing"
+  mv "${guest_home_1}/.ssh/id_ed25519_signing.pub.nopass" "${guest_home_1}/.ssh/id_ed25519_signing.pub"
+
+  # ゲスト内の config.json がシンボリックリンクにすり替えられた場合
+  mv "${guest_home_1}/.copilot/config.json" "${guest_home_1}/.copilot/config.json.real"
+  ln -s "/etc/passwd" "${guest_home_1}/.copilot/config.json"
+  : > "${lima_log}"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_host_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${guest_home_1}"
+    export STUB_LIMA_GUEST_PATH="${guest_bin}:${default_path}:${PATH}"
+    make -f "${REPO_ROOT}/Makefile" backup-auth recreate ENV_FILE="${empty_env}" AUTH_BACKUP_DIR="${backup_dest}" YES=1 >/dev/null 2>&1
+  ) || chain_abort_rc=$?
+  symlink_backup_rc="${chain_abort_rc}"
+  local delete_calls_on_backup_fail
+  delete_calls_on_backup_fail=$(grep -cx "delete" "${lima_log}" || true)
+  rm -f "${guest_home_1}/.copilot/config.json"
+  mv "${guest_home_1}/.copilot/config.json.real" "${guest_home_1}/.copilot/config.json"
+
+  local backed_pub=""
+  if [ -f "${backup_dest}/.ssh/id_ed25519_signing.pub" ]; then
+    backed_pub=$(awk '{print $1, $2}' "${backup_dest}/.ssh/id_ed25519_signing.pub")
+  fi
+  local expected_pub
+  expected_pub=$(printf '%s\n' "${orig_pub}" | awk '{print $1, $2}')
+
+  if [ "${backup_ok}" -eq 1 ] && \
+     [ "${parent_perm}" = "755" ] && [ "${bdir_perm}" = "700" ] && [ "${key_perm}" = "600" ] && \
+     [ "${gh_perm}" = "600" ] && [ "${copilot_perm}" = "600" ] && \
+     [ "${backed_pub}" = "${expected_pub}" ] && \
+     [ ! -e "${backup_dest}/.copilot/copilot-instructions.md" ] && \
+     [ "${stopped_backup_rc}" -ne 0 ] && [ "${passphrase_backup_rc}" -ne 0 ] && [ "${corrupt_backup_rc}" -ne 0 ] && [ "${symlink_backup_rc}" -ne 0 ] && \
+     [ "${delete_calls_on_backup_fail}" -eq 0 ] && \
+     grep -q "gho_testtoken123" "${backup_dest}/.config/gh/hosts.yml" && \
+     grep -q "copilot_token_abc" "${backup_dest}/.copilot/config.json"; then
+    log_pass "${suite}: make backup-auth normal backup, permissions, pubkey derivation, and failure safety"
+  else
+    log_fail "${suite}: make backup-auth checks failed (ok=${backup_ok}, perms=${parent_perm}/${bdir_perm}/${key_perm}/${gh_perm}/${copilot_perm}, stop_rc=${stopped_backup_rc}, pass_rc=${passphrase_backup_rc}, sym_rc=${symlink_backup_rc}, del=${delete_calls_on_backup_fail})"
+  fi
+
+  # 4.19 make restore-auth (scripts/restore-auth.sh): 起動前検証（副作用なし）・シンボリックリンク拒否・新 VM への復元・allowed_signers 更新と署名検証・gh auth setup-git・instructions 保持
+  log_test "${suite}: make restore-auth pre-start check, key/signers restoration, signing verification, and gh setup-git"
+  : > "${lima_log}"
+  local missing_restore_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_host_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" restore-auth ENV_FILE="${empty_env}" AUTH_BACKUP_DIR="${test_dir}/nonexistent_backup" >/dev/null 2>&1
+  ) || missing_restore_rc=$?
+  local lima_calls_on_restore_check_fail
+  lima_calls_on_restore_check_fail=$(wc -l < "${lima_log}" | tr -d ' ')
+
+  # 退避先の秘密鍵が破損またはパスフレーズ保護されている場合、VM 起動 (limactl) 前に --check で失敗すること
+  local corrupt_restore_dir="${test_dir}/corrupt_restore_backup"
+  mkdir -p "${corrupt_restore_dir}/.ssh"
+  chmod 0700 "${corrupt_restore_dir}" "${corrupt_restore_dir}/.ssh"
+  printf 'corrupt-key\n' > "${corrupt_restore_dir}/.ssh/id_ed25519_signing"
+  cp "${backup_dest}/.ssh/id_ed25519_signing.pub" "${corrupt_restore_dir}/.ssh/id_ed25519_signing.pub"
+  chmod 0600 "${corrupt_restore_dir}/.ssh/id_ed25519_signing" "${corrupt_restore_dir}/.ssh/id_ed25519_signing.pub"
+  : > "${lima_log}"
+  local corrupt_restore_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_host_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" restore-auth ENV_FILE="${empty_env}" AUTH_BACKUP_DIR="${corrupt_restore_dir}" >/dev/null 2>&1
+  ) || corrupt_restore_rc=$?
+  local lima_calls_on_corrupt_restore
+  lima_calls_on_corrupt_restore=$(wc -l < "${lima_log}" | tr -d ' ')
+
+  # --check が退避先内のファイル権限を変更しない（副作用がない）ことを確認
+  touch "${backup_dest}/unrelated.txt"
+  chmod 0644 "${backup_dest}/unrelated.txt"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_host_home}"
+    AUTH_BACKUP_DIR="${backup_dest}" bash "${REPO_ROOT}/scripts/restore-auth.sh" --check >/dev/null 2>&1
+  )
+  local check_unrelated_perm
+  check_unrelated_perm=$(stat -f '%Lp' "${backup_dest}/unrelated.txt" 2>/dev/null || stat -c '%a' "${backup_dest}/unrelated.txt" 2>/dev/null || true)
+  rm -f "${backup_dest}/unrelated.txt"
+
+  # 新しく再作成された VM のホームディレクトリを模擬（初回起動で別の鍵が生成され、allowed_signers と copilot-instructions.md がある状態）
+  local guest_home_2="${test_dir}/guest_home_2"
+  mkdir -p "${guest_home_2}/.ssh" "${guest_home_2}/.config/git" "${guest_home_2}/.config/gh" "${guest_home_2}/.copilot"
+  ssh-keygen -q -t ed25519 -N '' -C "throwaway@lima" -f "${guest_home_2}/.ssh/id_ed25519_signing"
+  local throwaway_pub
+  throwaway_pub=$(awk '{print $1, $2}' "${guest_home_2}/.ssh/id_ed25519_signing.pub")
+  printf 'restored@example.com namespaces="git" %s\n' "${throwaway_pub}" > "${guest_home_2}/.config/git/allowed_signers"
+  printf 'keep-this-agent-instructions\n' > "${guest_home_2}/.copilot/copilot-instructions.md"
+
+  local real_git
+  real_git=$(PATH="${default_path}:${PATH}" command -v git)
+  HOME="${guest_home_2}" GIT_CONFIG_GLOBAL="${guest_home_2}/.gitconfig" "${real_git}" config --global user.name "Restored User"
+  HOME="${guest_home_2}" GIT_CONFIG_GLOBAL="${guest_home_2}/.gitconfig" "${real_git}" config --global user.email "restored@example.com"
+  HOME="${guest_home_2}" GIT_CONFIG_GLOBAL="${guest_home_2}/.gitconfig" "${real_git}" config --global gpg.format ssh
+  HOME="${guest_home_2}" GIT_CONFIG_GLOBAL="${guest_home_2}/.gitconfig" "${real_git}" config --global user.signingkey "${guest_home_2}/.ssh/id_ed25519_signing"
+  HOME="${guest_home_2}" GIT_CONFIG_GLOBAL="${guest_home_2}/.gitconfig" "${real_git}" config --global commit.gpgsign true
+  HOME="${guest_home_2}" GIT_CONFIG_GLOBAL="${guest_home_2}/.gitconfig" "${real_git}" config --global gpg.ssh.allowedSignersFile "${guest_home_2}/.config/git/allowed_signers"
+
+  # ゲスト側 gh スタブ（gh auth setup-git の呼び出しを記録）
+  local gh_setup_log="${test_dir}/gh_setup.log"
+  cat > "${guest_bin}/gh" << EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "${gh_setup_log}"
+exit 0
+EOF
+  chmod +x "${guest_bin}/gh"
+  ln -sf "${real_git}" "${guest_bin}/git"
+
+  # ゲスト内の ~/.config/gh/hosts.yml がシンボリックリンクの場合は復元を拒否すること
+  ln -s "/tmp/outside_hosts.yml" "${guest_home_2}/.config/gh/hosts.yml"
+  local gh_child_symlink_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_host_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${guest_home_2}"
+    export STUB_LIMA_GUEST_PATH="${guest_bin}:${default_path}:${PATH}"
+    make -f "${REPO_ROOT}/Makefile" restore-auth ENV_FILE="${empty_env}" AUTH_BACKUP_DIR="${backup_dest}" >/dev/null 2>&1
+  ) || gh_child_symlink_rc=$?
+  rm -f "${guest_home_2}/.config/gh/hosts.yml"
+
+  local restore_ok=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${fake_host_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${guest_home_2}"
+    export STUB_LIMA_GUEST_PATH="${guest_bin}:${default_path}:${PATH}"
+    make -f "${REPO_ROOT}/Makefile" restore-auth ENV_FILE="${empty_env}" AUTH_BACKUP_DIR="${backup_dest}" >/dev/null 2>&1
+  ) && restore_ok=1
+
+  local restored_pub="" signers_content="" signers_lines=0
+  if [ -f "${guest_home_2}/.ssh/id_ed25519_signing.pub" ]; then
+    restored_pub=$(awk '{print $1, $2}' "${guest_home_2}/.ssh/id_ed25519_signing.pub")
+  fi
+  if [ -f "${guest_home_2}/.config/git/allowed_signers" ]; then
+    signers_content=$(cat "${guest_home_2}/.config/git/allowed_signers")
+    signers_lines=$(wc -l < "${guest_home_2}/.config/git/allowed_signers" | tr -d ' ')
+  fi
+
+  if [ "${missing_restore_rc}" -ne 0 ] && [ "${lima_calls_on_restore_check_fail}" -eq 0 ] && \
+     [ "${corrupt_restore_rc}" -ne 0 ] && [ "${lima_calls_on_corrupt_restore}" -eq 0 ] && \
+     [ "${check_unrelated_perm}" = "644" ] && \
+     [ "${gh_child_symlink_rc}" -ne 0 ] && [ ! -e "/tmp/outside_hosts.yml" ] && \
+     [ "${restore_ok}" -eq 1 ] && \
+     [ "${restored_pub}" = "${expected_pub}" ] && \
+     [ "${signers_lines}" -eq 1 ] && \
+     printf '%s\n' "${signers_content}" | grep -qF "${expected_pub}" && \
+     ! printf '%s\n' "${signers_content}" | grep -qF "${throwaway_pub}" && \
+     grep -qx "auth setup-git" "${gh_setup_log}" && \
+     grep -q "gho_testtoken123" "${guest_home_2}/.config/gh/hosts.yml" && \
+     grep -q "copilot_token_abc" "${guest_home_2}/.copilot/config.json" && \
+     grep -qx "keep-this-agent-instructions" "${guest_home_2}/.copilot/copilot-instructions.md"; then
+    log_pass "${suite}: make restore-auth pre-start check, key/signers restoration, signing verification, and gh setup-git"
+  else
+    log_fail "${suite}: make restore-auth checks failed (missing_rc=${missing_restore_rc}, calls=${lima_calls_on_restore_check_fail}, perm=${check_unrelated_perm}, gh_sym=${gh_child_symlink_rc}, restore_ok=${restore_ok}, lines=${signers_lines})"
   fi
 }
 

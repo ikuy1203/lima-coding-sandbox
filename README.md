@@ -99,7 +99,7 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── mise.sh                # mode: user
 │   └── agent-instructions.sh  # mode: user    エージェント向け指示ファイル（既定は無効）
 ├── scripts/                   # Makefile から呼び出す操作スクリプトと、検査・テストスクリプト
-│   ├── lib.sh                 # 共通関数（インスタンスの状態取得、入力値の正規化、NAME 検証）
+│   ├── lib.sh                 # 共通関数（インスタンスの状態取得、入力値の正規化、NAME・AUTH_BACKUP_DIR 検証）
 │   ├── create.sh              # make create（マウント検証・入力値正規化・インスタンス作成）
 │   ├── start.sh               # make start（マウント検証・インスタンス起動）
 │   ├── shell.sh               # make shell / herdr / pubkey / logs（インスタンス内でシェルまたはコマンドを実行）
@@ -109,6 +109,8 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── herdr-remote.sh        # make herdr-remote（ホストの herdr から VM へリモート接続）
 │   ├── forward.sh             # make forward（VM のポートをホストへ SSH 転送）
 │   ├── terminfo.sh            # make terminfo（ホストの terminfo を検証して VM へコピー）
+│   ├── backup-auth.sh         # make backup-auth（認証情報・Git 署名鍵をホストへ退避・検証）
+│   ├── restore-auth.sh        # make restore-auth（退避した認証情報・Git 署名鍵を VM へ復元）
 │   ├── lint.sh                # テンプレートとスクリプトの検査（CI でも実行する）
 │   └── test.sh                # プロビジョニングスクリプトと Makefile / scripts の回帰テスト（CI でも実行する）
 └── .github/
@@ -141,10 +143,12 @@ make stop     # 停止
 | `make herdr-remote` | ホストの herdr から VM のセッションにリモート接続する（停止していれば先に起動する。[後述](#herdr)） |
 | `make forward` | VM のポートをホストの `127.0.0.1` に転送する（`PORT=<VMのポート>` が必須。`HOST_PORT=<ホスト側ポート>` で変えられる。Ctrl-C で終了。[後述](#ネットワーク)） |
 | `make terminfo` | ホストの terminfo を VM にコピーする（既定はホストの `$TERM`。`TERM_NAME=<名前>` で変えられる。停止していれば先に起動する。[後述](#シェルに入る)） |
+| `make backup-auth` | VM 内の認証情報（`gh`・`copilot`）と Git コミット署名鍵をホストに退避する（既定は `~/.local/share/lima-coding-sandbox/auth-backup/<NAME>`。`AUTH_BACKUP_DIR=<パス>` で変えられる。[後述](#インスタンスを作り直す認証情報と作業データの退避復元)） |
+| `make restore-auth` | ホストに退避した認証情報と Git コミット署名鍵を VM に復元する（停止していれば先に起動する。[後述](#インスタンスを作り直す認証情報と作業データの退避復元)） |
 | `make stop` / `make restart` | 停止 / 再起動（再起動は、失敗したプロビジョニングのやり直しにも使える） |
 | `make status` | 状態を表示する |
-| `make delete` | 削除する（確認あり。`YES=1` を付けると確認を省略） |
-| `make recreate` | 削除してから作り直す（`coding-sandbox.yaml` や `provision/*.sh` の変更を反映するとき） |
+| `make delete` | 削除する（確認あり。`YES=1` を付けると確認を省略。[後述](#インスタンスを作り直す認証情報と作業データの退避復元)） |
+| `make recreate` | 削除してから作り直す（`coding-sandbox.yaml` や `provision/*.sh` の変更を反映するとき。[後述](#インスタンスを作り直す認証情報と作業データの退避復元)） |
 | `make pubkey` | Git のコミット署名用の公開鍵を表示する |
 | `make logs` | プロビジョニングのログ（cloud-init）の末尾を表示する |
 | `make lint` | `scripts/lint.sh` を実行する |
@@ -270,6 +274,63 @@ infocmp -x xterm-ghostty | limactl shell coding-sandbox tic -x -
 limactl stop coding-sandbox
 limactl delete coding-sandbox
 ```
+
+### インスタンスを作り直す（認証情報と作業データの退避・復元）
+
+`coding-sandbox.yaml` や `provision/*.sh`、`.env` の変更を反映するために `make recreate`（または `limactl delete` → `limactl start`）を実行すると、VM 内のすべてのファイル・認証情報・Git 署名鍵が消去されます。
+
+#### 1. 削除前の作業データの確認と退避
+
+> [!WARNING]
+> **未 push のコミット、未コミット・未追跡のファイル（`.env` など）、および Git 管理外の作業データは、新しく作った VM で `git clone` し直すだけでは復元できません。**
+> インスタンスを削除・再作成する前に、必要な変更をリモートリポジトリへ `git push` するか、ホストへ退避してください。
+
+VM 内の作業ディレクトリをホスト側へ手動で退避・復元する例:
+
+```sh
+# 削除前: VM 内の作業ディレクトリをホストの一時ディレクトリにコピーする
+mkdir -p ~/lima-workspace-backup
+limactl copy -r coding-sandbox:~/my-project ~/lima-workspace-backup/
+
+# 再作成後: 新しい VM に書き戻す
+limactl copy -r ~/lima-workspace-backup/my-project coding-sandbox:~/
+```
+
+#### 2. 認証情報と Git コミット署名鍵の退避・復元（`make backup-auth` / `make restore-auth`）
+
+`make backup-auth` と `make restore-auth` を使うと、GitHub への Signing Key の再登録や CLI のブラウザ認証をやり直さずに VM を作り直せます。
+
+```sh
+# 1. 現在の VM（起動中）から認証情報と署名鍵をホストへ退避する
+make backup-auth
+
+# 2. インスタンスを削除して作り直す
+make recreate
+
+# 3. 新しい VM に認証情報と署名鍵を復元する
+make restore-auth
+```
+
+1 コマンドで連続実行することもできます（`make backup-auth` が失敗した場合は `recreate` に進まず中断します）:
+
+```sh
+make backup-auth recreate restore-auth
+```
+
+対象となる VM 内のファイル:
+- `~/.ssh/id_ed25519_signing`、`~/.ssh/id_ed25519_signing.pub`（Git コミット署名用 SSH 鍵。復元時に `~/.config/git/allowed_signers` の更新と署名検証も自動で行われるため、GitHub への公開鍵の再登録は不要です）
+- `~/.config/gh`（GitHub CLI の認証情報・設定。復元時に `gh auth setup-git` も実行し、Git の HTTPS 認証連携を再設定します）
+- `~/.copilot/config.json`（GitHub Copilot CLI の設定・平文保存された認証情報。`provision/agent-instructions.sh` が管理する `~/.copilot/copilot-instructions.md` やセッションログは対象外のため、新しい VM の設定と競合しません）
+
+退避先とセキュリティ・運用上の注意点:
+- **退避先ディレクトリと権限**: 既定の退避先は `~/.local/share/lima-coding-sandbox/auth-backup/<NAME>` です（`AUTH_BACKUP_DIR=<パス>` で変更可能）。秘密鍵や平文トークンを保護するため、ディレクトリは `0700`、ファイルは `0600`（所有者のみ読み書き可）で保存されます。
+- **保存場所の制限**: 誤コミットや情報漏洩を防ぐため、このリポジトリ内のパスやシンボリックリンク先は `AUTH_BACKUP_DIR` に指定できません。別パスを指定する場合も、Git リポジトリ内やクラウド同期フォルダ・共有ディレクトリは避けてください。
+- **退避データの削除**: 退避データは `make restore-auth` の後もホストに残ります。不要になった場合は削除してください:
+  ```sh
+  rm -rf ~/.local/share/lima-coding-sandbox/auth-backup/coding-sandbox
+  ```
+- **再ログインが必要なケース**: 退避した設定ファイルを復元しても、トークンの有効期限切れ・失効や CLI 側の保存仕様によっては認証エラーになる場合があります。その場合は VM 内で `gh auth login` や `copilot` の `/login` を再実行してください（Antigravity CLI は対象外のため、必要に応じて [Antigravity CLI](#antigravity-cli) の手順で再設定してください）。
+- **署名鍵を復元しない場合**: `make backup-auth` / `make restore-auth` を使わずに VM を作り直した場合は、新しい署名鍵が生成されます。[Git のコミット署名](#git-のコミット署名) の手順で新しい公開鍵を登録し、GitHub の [SSH and GPG keys](https://github.com/settings/keys) から古い VM の Signing Key を削除してください。
 
 ## ホストのマウントが混入しないように
 
@@ -742,9 +803,9 @@ limactl start --timeout=30m ./coding-sandbox.yaml
 - ホストの herdr からリモート接続（`make herdr-remote`）しても、SSH エージェントは転送されません（VM のペインでは `SSH_AUTH_SOCK` が設定されません）。この接続はホストの `~/.ssh/config` を使うため、`Host *` などで `ForwardAgent yes` を設定していると転送されることがあります。その場合は `lima-*` を対象から外してください
 - ポートの自動転送は無効化しています（`portForwards` 設定）。この設定はホスト側の Lima（hostagent）が適用するため、VM 内のユーザが sudo を使っても回避できません。ホストからアクセスしたいポートがあるときは `make forward PORT=<ポート>` を使用してください（[ネットワーク](#ネットワーク)）
 - VM からはインターネットに接続できます。また、Lima の仕様上 `host.lima.internal`（`192.168.5.2`）はホストのループバックアドレスにつながっていますが、本サンドボックスでは VM 内の nftables により既定で接続を遮断しています。ただし VM 内のユーザはパスワードなしで sudo できるため、エージェントが意図してファイアウォールを解除することは防げません（誤操作の防止にとどまります）。また、Lima の NAT 仕様やホストのパケットフィルタ（pf）では VM からのループバック接続のみを識別して止めることができないため、認証のない機密サービスをホストで稼働させている場合は引き続き注意してください
-- 各 CLI の認証情報は VM 内に保存されます（Copilot CLI と gh は平文で保存される場合があります）。不要になったら `limactl delete` で VM ごと削除してください
+- 各 CLI の認証情報は VM 内に保存されます（Copilot CLI と gh は平文で保存される場合があります）。不要になったら `limactl delete` で VM ごと削除してください。また、`make backup-auth` でホストに退避した認証情報・署名鍵（既定は `~/.local/share/lima-coding-sandbox/auth-backup/<NAME>`）も、不要になったらホストから削除してください
 - gh でログインすると、そのトークン（既定のスコープは `repo`・`read:org`・`gist`）は、VM 内で同じユーザとして動くエージェントからも使えます。エージェントは、あなたの GitHub アカウントでアクセスできるリポジトリに push したり、issue や PR を作ったりできます。権限を絞りたいときは、対象のリポジトリと権限を限定した fine-grained PAT を、`gh auth login` の代わりに環境変数 `GH_TOKEN` で渡してください（`GH_TOKEN` は Copilot CLI の `/login` で保存したトークンよりも優先されるため、Copilot CLI が使うトークンも変わる点に注意してください）
-- Git のコミット署名鍵（`~/.ssh/id_ed25519_signing`）には、エージェントが非対話でコミットできるようパスフレーズを付けていません。そのため VM 内のエージェントもあなたの署名付きコミットを作成できます。GitHub の Verified バッジは「この VM で作成されたコミットである」ことを示し、人間が直接書いたことの証明にはなりません。不要になった VM を削除する際は、GitHub の [SSH and GPG keys](https://github.com/settings/keys) から対応する Signing Key も削除してください
+- Git のコミット署名鍵（`~/.ssh/id_ed25519_signing`）には、エージェントが非対話でコミットできるようパスフレーズを付けていません。そのため VM 内のエージェントもあなたの署名付きコミットを作成できます。GitHub の Verified バッジは「この VM で作成されたコミットである」ことを示し、人間が直接書いたことの証明にはなりません。不要になった VM を削除する際（または `make restore-auth` で鍵を引き継がずに作り直した際）は、GitHub の [SSH and GPG keys](https://github.com/settings/keys) から対応する古い Signing Key も削除してください
 
 ## 開発
 

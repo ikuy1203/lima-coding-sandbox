@@ -31,6 +31,10 @@ HOST_PORT :=
 # make terminfo で VM にコピーする terminfo の名前。既定はホストの $TERM（例: xterm-ghostty）
 TERM_NAME := $(TERM)
 
+# make backup-auth / make restore-auth で認証情報・署名鍵を退避するホスト側のディレクトリ。
+# 空なら既定値（~/.local/share/lima-coding-sandbox/auth-backup/$(NAME)）を使う
+AUTH_BACKUP_DIR :=
+
 # 設定ファイル（make の書式で KEY=値 を書く。.env.example を参照）。
 # 既定の .env が無ければ読まない。コマンドラインで指定したファイルが無ければエラーにする
 ENV_FILE := .env
@@ -42,12 +46,12 @@ endif
 
 # scripts/*.sh に渡す設定値。
 # 優先順位: コマンドライン > $(ENV_FILE) > 既定値（Git の設定が空のときは scripts/create.sh でホストの git config --global から補う）
-export NAME TEMPLATE CPUS MEMORY DISK TIMEOUT PORT HOST_PORT TERM_NAME YES
+export NAME TEMPLATE CPUS MEMORY DISK TIMEOUT PORT HOST_PORT TERM_NAME AUTH_BACKUP_DIR YES
 export GIT_USER_NAME GIT_USER_EMAIL BLOCK_HOST_LOOPBACK AGENT_INSTRUCTIONS COPILOT_VERSION MISE_VERSION
 
 .NOTPARALLEL:
 .DEFAULT_GOAL := help
-.PHONY: help create start shell herdr herdr-remote forward _check-terminfo terminfo stop restart status delete recreate pubkey logs lint test
+.PHONY: help create start shell herdr herdr-remote forward _check-terminfo terminfo backup-auth _check-restore-auth restore-auth stop restart status delete recreate pubkey logs lint test
 
 help: ## ターゲットの一覧を表示する
 	@grep -E '^[a-z-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F ':.*## ' '{ printf "  make %-12s %s\n", $$1, $$2 }'
@@ -77,6 +81,16 @@ _check-terminfo:
 
 terminfo: _check-terminfo start ## ホストの terminfo を VM にコピーする（既定は $TERM。TERM_NAME=<名前> で変えられる。停止していれば起動する）
 	@./scripts/terminfo.sh
+
+backup-auth: ## 認証情報（gh・copilot）と Git 署名鍵をホストに退避する（AUTH_BACKUP_DIR で退避先を変更可）
+	@./scripts/backup-auth.sh
+
+# restore-auth の前提条件。起動処理に入る前にホストに退避データがあるかを検証する
+_check-restore-auth:
+	@./scripts/restore-auth.sh --check
+
+restore-auth: _check-restore-auth start ## 退避した認証情報と Git 署名鍵を VM に復元する（停止していれば起動する）
+	@./scripts/restore-auth.sh
 
 stop: ## インスタンスを停止する
 	@./scripts/stop.sh
