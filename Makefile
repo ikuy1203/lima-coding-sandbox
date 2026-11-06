@@ -51,7 +51,7 @@ export GIT_USER_NAME GIT_USER_EMAIL BLOCK_HOST_LOOPBACK AGENT_INSTRUCTIONS COPIL
 
 .NOTPARALLEL:
 .DEFAULT_GOAL := help
-.PHONY: help create start shell herdr herdr-remote forward _check-terminfo terminfo backup-auth _check-restore-auth restore-auth stop restart status delete recreate pubkey _check-register-key register-key logs lint test
+.PHONY: help create start shell herdr herdr-remote forward _check-terminfo terminfo backup-auth _check-restore-auth restore-auth update versions stop restart status delete recreate pubkey _check-register-key register-key logs lint test
 
 help: ## ターゲットの一覧を表示する
 	@grep -E '^[a-z-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F ':.*## ' '{ printf "  make %-12s %s\n", $$1, $$2 }'
@@ -91,6 +91,12 @@ _check-restore-auth:
 
 restore-auth: _check-restore-auth start ## 退避した認証情報と Git 署名鍵を VM に復元する（停止していれば起動する）
 	@./scripts/restore-auth.sh
+
+update: ## VM 内のツール（herdr・copilot・mise）と apt パッケージを一括更新する（起動中のみ）
+	@./scripts/update.sh
+
+versions: ## ホストと VM 内の主要ソフトウェアのバージョンを一覧表示する（起動中のみ）
+	@./scripts/versions.sh
 
 stop: ## インスタンスを停止する
 	@./scripts/stop.sh

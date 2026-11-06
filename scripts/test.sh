@@ -1826,7 +1826,7 @@ printf '%s\n' '---CMD_DELIM---' >> "${STUB_LIMACTL_LOG}"
 cmd=""
 for arg in "$@"; do
   case "$arg" in
-    template|list|create|start|stop|delete|shell)
+    --version|template|list|create|start|stop|delete|shell)
       cmd="$arg"
       break
       ;;
@@ -1834,6 +1834,10 @@ for arg in "$@"; do
 done
 
 case "$cmd" in
+  --version)
+    echo "limactl version ${STUB_LIMA_VERSION_OUTPUT:-2.2.0}"
+    exit 0
+    ;;
   template)
     if [ "${STUB_TEMPLATE_MOUNTS:-0}" = "1" ]; then
       echo "- location: /Users/test/mounted"
@@ -3164,6 +3168,409 @@ EOF
     log_pass "${suite}: make register-key pre-start check, signing key registration, and scope error guidance"
   else
     log_fail "${suite}: make register-key checks failed (no_gh_rc=${no_gh_reg_rc}/${lima_calls_on_no_gh}, empty_rc=${empty_name_reg_rc}/${lima_calls_on_empty_reg_name}, reg_ok=${reg_ok}, reg_exists=${reg_exists_ok}, stop_rc=${stopped_reg_rc}, bad_pub=${bad_pub_reg_rc}, multi_pub=${multi_pub_reg_rc}, gh_fail=${gh_fail_reg_rc})"
+  fi
+
+  # 4.21 make update (scripts/update.sh): 未作成・停止中拒否・非対話一括更新・HERDR_ENV 解除・herdr スキップ通知・再起動要否通知・途中失敗伝播
+  log_test "${suite}: make update non-interactive execution, herdr skip notice, reboot notice, and error propagation"
+  local update_guest_home="${test_dir}/update_guest_home"
+  local update_guest_bin="${test_dir}/update_guest_bin"
+  local update_cmd_log="${test_dir}/update_cmd.log"
+  local update_reboot_file="${test_dir}/reboot-required"
+  mkdir -p "${update_guest_home}/.local/bin" "${update_guest_bin}"
+
+  cat > "${update_guest_home}/.local/bin/herdr" << 'EOF'
+#!/bin/bash
+set -eu
+if [ -n "${HERDR_ENV:-}" ]; then
+  echo >&2 "error: HERDR_ENV must be unset before running herdr update"
+  exit 1
+fi
+printf 'herdr %s\n' "$*" >> "${STUB_UPDATE_CMD_LOG}"
+if [ "${STUB_HERDR_UPDATE_FAIL:-0}" = "1" ]; then
+  echo >&2 "herdr update error"
+  exit 1
+fi
+if [ "${STUB_HERDR_SESSION_RUNNING:-0}" = "1" ]; then
+  echo >&2 "Herdr was not updated."
+  echo >&2 "Stop running Herdr sessions when ready, then run \`herdr update\` again."
+  exit 0
+fi
+echo "Updated herdr to 0.9.5."
+EOF
+  chmod +x "${update_guest_home}/.local/bin/herdr"
+
+  cat > "${update_guest_home}/.local/bin/copilot" << 'EOF'
+#!/bin/bash
+set -eu
+printf 'copilot %s\n' "$*" >> "${STUB_UPDATE_CMD_LOG}"
+if [ "${STUB_COPILOT_UPDATE_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
+echo "GitHub Copilot CLI updated."
+EOF
+  chmod +x "${update_guest_home}/.local/bin/copilot"
+
+  cat > "${update_guest_home}/.local/bin/mise" << 'EOF'
+#!/bin/bash
+set -eu
+printf 'mise %s\n' "$*" >> "${STUB_UPDATE_CMD_LOG}"
+echo "mise self-updated."
+EOF
+  chmod +x "${update_guest_home}/.local/bin/mise"
+
+  cat > "${update_guest_bin}/fdfind" << 'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "${update_guest_bin}/fdfind"
+
+  cat > "${update_guest_bin}/sudo" << 'EOF'
+#!/bin/bash
+set -eu
+printf 'sudo %s\n' "$*" >> "${STUB_UPDATE_CMD_LOG}"
+case "$*" in
+  *"apt-get"*update)
+    if [ "${STUB_APT_UPDATE_NONLOCK_FAIL:-0}" = "1" ]; then
+      echo >&2 "E: Failed to fetch https://example.com/dists/stable/InRelease"
+      exit 100
+    fi
+    if [ "${STUB_APT_UPDATE_ALWAYS_FAIL:-0}" = "1" ]; then
+      echo >&2 "E: Could not get lock /var/lib/apt/lists/lock. It is held by process 1234 (apt-get)"
+      exit 100
+    fi
+    if [ -n "${STUB_APT_UPDATE_FAIL_ONCE_FILE:-}" ] && [ -f "${STUB_APT_UPDATE_FAIL_ONCE_FILE}" ]; then
+      rm -f "${STUB_APT_UPDATE_FAIL_ONCE_FILE}"
+      echo >&2 "E: Could not get lock /var/lib/apt/lists/lock. It is held by process 1234 (apt-get)"
+      exit 100
+    fi
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "${update_guest_bin}/sudo"
+
+  # 1) 未作成・停止中・空 NAME の拒否（空 NAME は limactl を呼ぶ前に拒否されること）
+  local upd_missing_rc=0 upd_stopped_rc=0 upd_badname_rc=0 upd_badname_lima_calls=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT=""
+    make -f "${REPO_ROOT}/Makefile" update ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || upd_missing_rc=$?
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Stopped"
+    make -f "${REPO_ROOT}/Makefile" update ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || upd_stopped_rc=$?
+
+  : > "${lima_log}"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    make -f "${REPO_ROOT}/Makefile" update ENV_FILE="${empty_env}" NAME=' "" ' >/dev/null 2>&1
+  ) || upd_badname_rc=$?
+  upd_badname_lima_calls=$(wc -l < "${lima_log}" | tr -d ' ')
+
+  # 2) 正常更新（HERDR_ENV=1 がホストから渡されても解除され、再起動不要・herdr スキップなし）
+  : > "${update_cmd_log}"
+  rm -f "${update_reboot_file}"
+  local upd_normal_ok=0 upd_normal_out=""
+  upd_normal_out=$(
+    export PATH="${fake_bin}:${PATH}"
+    export HERDR_ENV=1
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${update_guest_home}"
+    export STUB_LIMA_GUEST_PATH="${update_guest_bin}:${default_path}:${PATH}"
+    export STUB_UPDATE_CMD_LOG="${update_cmd_log}"
+    export LIMA_SANDBOX_REBOOT_REQUIRED_FILE="${update_reboot_file}"
+    make -f "${REPO_ROOT}/Makefile" update ENV_FILE="${empty_env}" 2>&1
+  ) && upd_normal_ok=1
+  local upd_normal_cmds
+  upd_normal_cmds=$(cat "${update_cmd_log}")
+
+  # 3) herdr セッション稼働中（Herdr was not updated. 出力時）・apt-get update 1 回目ロック失敗からの再試行回復・再起動必要（reboot-required 存在時）の案内表示
+  : > "${update_cmd_log}"
+  touch "${update_reboot_file}"
+  local apt_fail_once_file="${test_dir}/apt_fail_once"
+  touch "${apt_fail_once_file}"
+  local upd_notice_ok=0 upd_notice_out=""
+  upd_notice_out=$(
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${update_guest_home}"
+    export STUB_LIMA_GUEST_PATH="${update_guest_bin}:${default_path}:${PATH}"
+    export STUB_UPDATE_CMD_LOG="${update_cmd_log}"
+    export STUB_HERDR_SESSION_RUNNING=1
+    export STUB_APT_UPDATE_FAIL_ONCE_FILE="${apt_fail_once_file}"
+    export LIMA_SANDBOX_APT_UPDATE_SLEEP=0
+    export LIMA_SANDBOX_REBOOT_REQUIRED_FILE="${update_reboot_file}"
+    make -f "${REPO_ROOT}/Makefile" update ENV_FILE="${empty_env}" 2>&1
+  ) && upd_notice_ok=1
+  local upd_notice_apt_update_calls
+  upd_notice_apt_update_calls=$(grep -cx "sudo -n apt-get --error-on=any update" "${update_cmd_log}" || true)
+
+  # 4) 途中コマンド（herdr update・copilot update・apt-get update 再試行上限到達）失敗時は後続を実行せず非ゼロ終了すること
+  : > "${update_cmd_log}"
+  local upd_herdr_fail_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${update_guest_home}"
+    export STUB_LIMA_GUEST_PATH="${update_guest_bin}:${default_path}:${PATH}"
+    export STUB_UPDATE_CMD_LOG="${update_cmd_log}"
+    export STUB_HERDR_UPDATE_FAIL=1
+    make -f "${REPO_ROOT}/Makefile" update ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || upd_herdr_fail_rc=$?
+  local upd_herdr_fail_cmds
+  upd_herdr_fail_cmds=$(cat "${update_cmd_log}")
+
+  : > "${update_cmd_log}"
+  local upd_fail_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${update_guest_home}"
+    export STUB_LIMA_GUEST_PATH="${update_guest_bin}:${default_path}:${PATH}"
+    export STUB_UPDATE_CMD_LOG="${update_cmd_log}"
+    export STUB_COPILOT_UPDATE_FAIL=1
+    make -f "${REPO_ROOT}/Makefile" update ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || upd_fail_rc=$?
+  local upd_fail_cmds
+  upd_fail_cmds=$(cat "${update_cmd_log}")
+
+  : > "${update_cmd_log}"
+  local upd_apt_fail_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${update_guest_home}"
+    export STUB_LIMA_GUEST_PATH="${update_guest_bin}:${default_path}:${PATH}"
+    export STUB_UPDATE_CMD_LOG="${update_cmd_log}"
+    export STUB_APT_UPDATE_ALWAYS_FAIL=1
+    export LIMA_SANDBOX_APT_UPDATE_ATTEMPTS=2
+    export LIMA_SANDBOX_APT_UPDATE_SLEEP=0
+    bash "${REPO_ROOT}/scripts/update.sh" >/dev/null 2>&1
+  ) || upd_apt_fail_rc=$?
+  local upd_apt_fail_cmds upd_apt_fail_calls
+  upd_apt_fail_cmds=$(cat "${update_cmd_log}")
+  upd_apt_fail_calls=$(grep -cx "sudo -n apt-get --error-on=any update" "${update_cmd_log}" || true)
+
+  : > "${update_cmd_log}"
+  local upd_apt_nonlock_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${update_guest_home}"
+    export STUB_LIMA_GUEST_PATH="${update_guest_bin}:${default_path}:${PATH}"
+    export STUB_UPDATE_CMD_LOG="${update_cmd_log}"
+    export STUB_APT_UPDATE_NONLOCK_FAIL=1
+    export LIMA_SANDBOX_APT_UPDATE_ATTEMPTS=5
+    export LIMA_SANDBOX_APT_UPDATE_SLEEP=0
+    bash "${REPO_ROOT}/scripts/update.sh" >/dev/null 2>&1
+  ) || upd_apt_nonlock_rc=$?
+  local upd_apt_nonlock_cmds upd_apt_nonlock_calls
+  upd_apt_nonlock_cmds=$(cat "${update_cmd_log}")
+  upd_apt_nonlock_calls=$(grep -cx "sudo -n apt-get --error-on=any update" "${update_cmd_log}" || true)
+
+  if [ "${upd_missing_rc}" -ne 0 ] && [ "${upd_stopped_rc}" -ne 0 ] && [ "${upd_badname_rc}" -ne 0 ] && \
+     [ "${upd_badname_lima_calls}" -eq 0 ] && \
+     [ "${upd_normal_ok}" -eq 1 ] && \
+     printf '%s\n' "${upd_normal_cmds}" | grep -qx "herdr update" && \
+     printf '%s\n' "${upd_normal_cmds}" | grep -qx "copilot update" && \
+     printf '%s\n' "${upd_normal_cmds}" | grep -qx "mise self-update -y" && \
+     printf '%s\n' "${upd_normal_cmds}" | grep -qx "sudo -n apt-get --error-on=any update" && \
+     printf '%s\n' "${upd_normal_cmds}" | grep -q "sudo -n DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 upgrade -y --with-new-pkgs" && \
+     printf '%s\n' "${upd_normal_cmds}" | grep -q "sudo -n ln -sf .* /usr/local/bin/fd" && \
+     ! printf '%s\n' "${upd_normal_out}" | grep -q "herdr のバイナリ更新はスキップされました" && \
+     ! printf '%s\n' "${upd_normal_out}" | grep -q "make restart" && \
+     [ "${upd_notice_ok}" -eq 1 ] && \
+     [ "${upd_notice_apt_update_calls}" -eq 2 ] && \
+     printf '%s\n' "${upd_notice_out}" | grep -q "herdr のバイナリ更新はスキップされました" && \
+     printf '%s\n' "${upd_notice_out}" | grep -q "make restart" && \
+     [ "${upd_herdr_fail_rc}" -ne 0 ] && \
+     ! printf '%s\n' "${upd_herdr_fail_cmds}" | grep -q "copilot update" && \
+     [ "${upd_fail_rc}" -ne 0 ] && \
+     ! printf '%s\n' "${upd_fail_cmds}" | grep -q "mise self-update" && \
+     [ "${upd_apt_fail_rc}" -eq 100 ] && \
+     [ "${upd_apt_fail_calls}" -eq 2 ] && \
+     ! printf '%s\n' "${upd_apt_fail_cmds}" | grep -q "upgrade" && \
+     [ "${upd_apt_nonlock_rc}" -eq 100 ] && \
+     [ "${upd_apt_nonlock_calls}" -eq 1 ] && \
+     ! printf '%s\n' "${upd_apt_nonlock_cmds}" | grep -q "upgrade"; then
+    log_pass "${suite}: make update non-interactive execution, herdr skip notice, reboot notice, and error propagation"
+  else
+    log_fail "${suite}: make update checks failed (missing=${upd_missing_rc}, stopped=${upd_stopped_rc}, badname_calls=${upd_badname_lima_calls}, normal=${upd_normal_ok}, notice=${upd_notice_ok}, apt_calls=${upd_notice_apt_update_calls}, herdr_fail=${upd_herdr_fail_rc}, fail_rc=${upd_fail_rc}, apt_fail_rc=${upd_apt_fail_rc}, nonlock_rc=${upd_apt_nonlock_rc})"
+  fi
+
+  # 4.22 make versions (scripts/versions.sh) および make help: 全 14 項目のバージョン一覧表示とターゲット一覧
+  log_test "${suite}: make versions outputs all 14 environment items and make help lists update/versions"
+  local ver_guest_home="${test_dir}/ver_guest_home"
+  local ver_guest_bin="${test_dir}/ver_guest_bin"
+  local fake_os_release="${test_dir}/os-release"
+  mkdir -p "${ver_guest_home}/.local/bin" "${ver_guest_bin}"
+
+  cat > "${fake_os_release}" << 'EOF'
+PRETTY_NAME="Ubuntu 26.04 LTS"
+VERSION="26.04 LTS (Resolute Raccoon)"
+EOF
+
+  cat > "${ver_guest_bin}/uname" << 'EOF'
+#!/bin/bash
+if [ "${1:-}" = "-r" ]; then
+  echo "7.0.0-11-generic"
+else
+  echo "Linux 7.0.0-11-generic"
+fi
+EOF
+  chmod +x "${ver_guest_bin}/uname"
+
+  cat > "${ver_guest_bin}/git" << 'EOF'
+#!/bin/bash
+echo "git version 2.53.0"
+EOF
+  chmod +x "${ver_guest_bin}/git"
+
+  cat > "${ver_guest_bin}/gh" << 'EOF'
+#!/bin/bash
+echo "gh version 2.102.0 (2026-10-01)"
+EOF
+  chmod +x "${ver_guest_bin}/gh"
+
+  cat > "${ver_guest_bin}/python3" << 'EOF'
+#!/bin/bash
+echo "Python 3.14.4"
+EOF
+  chmod +x "${ver_guest_bin}/python3"
+
+  cat > "${ver_guest_bin}/node" << 'EOF'
+#!/bin/bash
+echo "v22.22.1"
+EOF
+  chmod +x "${ver_guest_bin}/node"
+
+  cat > "${ver_guest_bin}/docker" << 'EOF'
+#!/bin/bash
+if [ "${1:-}" = "version" ]; then
+  if [ "${STUB_DOCKER_DAEMON_DOWN:-0}" = "1" ]; then
+    exit 1
+  fi
+  echo "29.8.2"
+else
+  echo "Docker version 29.8.2, build 1234567"
+fi
+EOF
+  chmod +x "${ver_guest_bin}/docker"
+
+  cat > "${ver_guest_bin}/mpg123" << 'EOF'
+#!/bin/bash
+echo "mpg123 1.33.3"
+EOF
+  chmod +x "${ver_guest_bin}/mpg123"
+
+  cat > "${ver_guest_home}/.local/bin/herdr" << 'EOF'
+#!/bin/bash
+echo "herdr 0.9.3"
+EOF
+  chmod +x "${ver_guest_home}/.local/bin/herdr"
+
+  cat > "${ver_guest_home}/.local/bin/agy" << 'EOF'
+#!/bin/bash
+echo "1.2.16"
+EOF
+  chmod +x "${ver_guest_home}/.local/bin/agy"
+
+  cat > "${ver_guest_home}/.local/bin/copilot" << 'EOF'
+#!/bin/bash
+echo "GitHub Copilot CLI 1.0.91."
+EOF
+  chmod +x "${ver_guest_home}/.local/bin/copilot"
+
+  cat > "${ver_guest_home}/.local/bin/mise" << 'EOF'
+#!/bin/bash
+echo "2026.10.7 linux-arm64 (2026-10-07)"
+EOF
+  chmod +x "${ver_guest_home}/.local/bin/mise"
+
+  local ver_missing_rc=0 ver_stopped_rc=0 ver_ok=0 ver_out="" help_out=""
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT=""
+    make -f "${REPO_ROOT}/Makefile" versions ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || ver_missing_rc=$?
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Stopped"
+    make -f "${REPO_ROOT}/Makefile" versions ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || ver_stopped_rc=$?
+
+  ver_out=$(
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_VERSION_OUTPUT="2.2.0"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${ver_guest_home}"
+    export STUB_LIMA_GUEST_PATH="${ver_guest_bin}:${default_path}:${PATH}"
+    export LIMA_SANDBOX_OS_RELEASE_FILE="${fake_os_release}"
+    export LIMA_SANDBOX_PYTHON3_BIN="${ver_guest_bin}/python3"
+    export LIMA_SANDBOX_NODE_BIN="${ver_guest_bin}/node"
+    make -f "${REPO_ROOT}/Makefile" versions ENV_FILE="${empty_env}" 2>&1
+  ) && ver_ok=1
+
+  # 個別ツール（例: agy）欠落時や Docker デーモン停止時でも他項目の出力が継続し、(取得失敗) / (クライアント) が表示されること
+  rm -f "${ver_guest_home}/.local/bin/agy"
+  local ver_partial_ok=0 ver_partial_out=""
+  ver_partial_out=$(
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_VERSION_OUTPUT="2.2.0"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${ver_guest_home}"
+    export STUB_LIMA_GUEST_PATH="${ver_guest_bin}:${default_path}:${PATH}"
+    export STUB_DOCKER_DAEMON_DOWN=1
+    export LIMA_SANDBOX_OS_RELEASE_FILE="${fake_os_release}"
+    export LIMA_SANDBOX_PYTHON3_BIN="${ver_guest_bin}/python3"
+    export LIMA_SANDBOX_NODE_BIN="${ver_guest_bin}/node"
+    make -f "${REPO_ROOT}/Makefile" versions ENV_FILE="${empty_env}" 2>&1
+  ) && ver_partial_ok=1
+
+  help_out=$(make -f "${REPO_ROOT}/Makefile" help ENV_FILE="${empty_env}" 2>&1)
+
+  if [ "${ver_missing_rc}" -ne 0 ] && [ "${ver_stopped_rc}" -ne 0 ] && [ "${ver_ok}" -eq 1 ] && \
+     [ "${ver_partial_ok}" -eq 1 ] && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^(macOS|Linux)[[:space:]]+.+' && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^Lima[[:space:]]+2\.2\.0$' && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^Ubuntu[[:space:]]+26\.04 LTS$' && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^カーネル {13}7\.0\.0-11-generic$' && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^git[[:space:]]+2\.53\.0$' && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^GitHub CLI[[:space:]]+2\.102\.0$' && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^Python[[:space:]]+3\.14\.4$' && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^Node\.js[[:space:]]+22\.22\.1$' && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^Docker Engine[[:space:]]+29\.8\.2$' && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^herdr[[:space:]]+0\.9\.3$' && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^mpg123[[:space:]]+1\.33\.3$' && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^Antigravity CLI[[:space:]]+1\.2\.16$' && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^GitHub Copilot CLI[[:space:]]+1\.0\.91$' && \
+     printf '%s\n' "${ver_out}" | grep -Eq '^mise[[:space:]]+2026\.10\.7$' && \
+     printf '%s\n' "${ver_partial_out}" | grep -Eq '^Docker Engine[[:space:]]+29\.8\.2 \(クライアント\)$' && \
+     printf '%s\n' "${ver_partial_out}" | grep -Eq '^Antigravity CLI[[:space:]]+\(取得失敗\)$' && \
+     printf '%s\n' "${ver_partial_out}" | grep -Eq '^mise[[:space:]]+2026\.10\.7$' && \
+     printf '%s\n' "${help_out}" | grep -q "make update" && \
+     printf '%s\n' "${help_out}" | grep -q "make versions"; then
+    log_pass "${suite}: make versions outputs all 14 environment items and make help lists update/versions"
+  else
+    log_fail "${suite}: make versions or make help checks failed (missing=${ver_missing_rc}, stopped=${ver_stopped_rc}, ok=${ver_ok})"
   fi
 }
 
