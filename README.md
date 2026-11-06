@@ -71,10 +71,7 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 
 > [!TIP]
 > 上記のうち、GitHub Copilot CLI と mise は `.env`（または `--param`）でバージョンを指定してインスタンスを作成することで、動作確認済みのバージョンを再現できます（[後述](#作成時の設定git-ユーザ情報ホストループバック遮断エージェント指示配置cli-バージョンを-env-で指定する)）。
-> 実際に VM に導入されたツールのバージョンやアーキテクチャは、次のコマンドで一覧確認できます:
-> ```sh
-> limactl shell coding-sandbox bash -c 'for c in git gh docker herdr agy copilot mise; do printf "%-10s " "$c"; "$c" --version 2>&1 | head -n1; done'
-> ```
+> 実際にホストと VM に導入されたソフトウェアのバージョンは、`make versions` で一覧確認できます。
 
 ## ファイル構成
 
@@ -111,6 +108,8 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── terminfo.sh            # make terminfo（ホストの terminfo を検証して VM へコピー）
 │   ├── backup-auth.sh         # make backup-auth（認証情報・Git 署名鍵をホストへ退避・検証）
 │   ├── restore-auth.sh        # make restore-auth（退避した認証情報・Git 署名鍵を VM へ復元）
+│   ├── update.sh              # make update（VM 内のツールと apt パッケージを一括更新）
+│   ├── versions.sh            # make versions（ホストと VM 内の主要ソフトウェアのバージョンを一覧表示）
 │   ├── register-key.sh        # make register-key（Git 署名鍵をホストの gh で GitHub に登録）
 │   ├── lint.sh                # テンプレートとスクリプトの検査（CI でも実行する）
 │   └── test.sh                # プロビジョニングスクリプトと Makefile / scripts の回帰テスト（CI でも実行する）
@@ -146,6 +145,8 @@ make stop     # 停止
 | `make terminfo` | ホストの terminfo を VM にコピーする（既定はホストの `$TERM`。`TERM_NAME=<名前>` で変えられる。停止していれば先に起動する。[後述](#シェルに入る)） |
 | `make backup-auth` | VM 内の認証情報（`gh`・`copilot`）と Git コミット署名鍵をホストに退避する（既定は `~/.local/share/lima-coding-sandbox/auth-backup/<NAME>`。`AUTH_BACKUP_DIR=<パス>` で変えられる。[後述](#インスタンスを作り直す認証情報と作業データの退避復元)） |
 | `make restore-auth` | ホストに退避した認証情報と Git コミット署名鍵を VM に復元する（停止していれば先に起動する。[後述](#インスタンスを作り直す認証情報と作業データの退避復元)） |
+| `make update` | 起動中の VM 内のツール（`herdr`・`copilot`・`mise`）と `apt` パッケージを一括更新する（[後述](#更新)） |
+| `make versions` | ホストと起動中の VM 内の主要ソフトウェアのバージョンを一覧表示する |
 | `make stop` / `make restart` | 停止 / 再起動（再起動は、失敗したプロビジョニングのやり直しにも使える） |
 | `make status` | 状態を表示する |
 | `make delete` | 削除する（確認あり。起動中なら署名鍵の指紋を表示。`YES=1` を付けると確認を省略。[後述](#インスタンスを作り直す認証情報と作業データの退避復元)） |
@@ -766,6 +767,19 @@ limactl shell coding-sandbox aplay /usr/share/sounds/alsa/Front_Center.wav
 鳴らしたくないときは、`coding-sandbox.yaml` の `audio.device` を空にして（`device: ""`）、インスタンスを作り直してください。`audio:` ごと削除すると、`$LIMA_HOME/_config/default.yaml` に音声の設定があった場合に、そちらが使われます。また、`override.yaml` に音声の設定があると、テンプレートの値よりも優先されるため、そちらも確認してください。
 
 ## 更新
+
+ホストから `make update` を実行すると、起動中の VM 内の `herdr`・`GitHub Copilot CLI`・`mise`・`apt` パッケージを非対話で一括更新できます（`Antigravity CLI` はバックグラウンドで自動更新されるため対象外です）。
+
+```sh
+make update
+```
+
+- VM 内で `herdr` のセッションが稼働中で、かつ稼働中の `herdr` サーバーの停止・再起動を伴う更新である場合、稼働中のセッションやペインを止めないよう `herdr` のバイナリ更新はスキップされ、メッセージが表示されます。セッションを終了してから再度 `make update`（または VM 内で `herdr update`）を実行してください（サーバー再起動を伴わない更新はセッション稼働中でもそのまま反映されます）
+- 稼働中の `copilot` プロセスには影響せず、次回起動時から新しいバージョンが使われます。また、作成時に `COPILOT_VERSION` や `MISE_VERSION` でバージョンを固定していた場合も、`make update` を実行すると最新版に更新されます
+- `apt` で `docker-ce` パッケージが更新されると Docker デーモンが再起動し、稼働中のコンテナが停止する点に注意してください
+- カーネルの更新などで VM の再起動が必要な場合（`/var/run/reboot-required` がある場合）は、完了時に案内が表示されます。案内に従って `make restart` を実行してください
+
+VM 内で個別に更新する場合は、以下のコマンドを実行します。
 
 | ソフトウェア | 方法 |
 |---|---|
