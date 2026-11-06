@@ -51,7 +51,7 @@ export GIT_USER_NAME GIT_USER_EMAIL BLOCK_HOST_LOOPBACK AGENT_INSTRUCTIONS COPIL
 
 .NOTPARALLEL:
 .DEFAULT_GOAL := help
-.PHONY: help create start shell herdr herdr-remote forward _check-terminfo terminfo backup-auth _check-restore-auth restore-auth stop restart status delete recreate pubkey logs lint test
+.PHONY: help create start shell herdr herdr-remote forward _check-terminfo terminfo backup-auth _check-restore-auth restore-auth stop restart status delete recreate pubkey _check-register-key register-key logs lint test
 
 help: ## ターゲットの一覧を表示する
 	@grep -E '^[a-z-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F ':.*## ' '{ printf "  make %-12s %s\n", $$1, $$2 }'
@@ -105,8 +105,15 @@ delete: ## インスタンスを削除する（確認あり。YES=1 で確認を
 
 recreate: delete start ## インスタンスを作り直す（coding-sandbox.yaml や provision/*.sh の変更を反映する）
 
-pubkey: ## Git のコミット署名用の公開鍵を表示する（GitHub に Signing Key として登録する）
+pubkey: ## Git のコミット署名用の公開鍵を表示する（ブラウザで手動登録するとき）
 	@./scripts/shell.sh cat .ssh/id_ed25519_signing.pub
+
+# register-key の前提条件。起動処理に入る前にホストに gh があるかを検証する
+_check-register-key:
+	@./scripts/register-key.sh --check
+
+register-key: _check-register-key start ## Git のコミット署名用の公開鍵をホストの gh で GitHub に登録する（停止していれば起動する）
+	@./scripts/register-key.sh
 
 logs: ## プロビジョニングのログ（cloud-init）の末尾を表示する
 	@./scripts/shell.sh sudo tail -n 100 /var/log/cloud-init-output.log
