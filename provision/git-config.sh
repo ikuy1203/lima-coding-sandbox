@@ -34,7 +34,7 @@ fi
 if [ ! -s "${key}" ]; then
   install -m 0700 -d "${HOME}/.ssh"
   rm -f "${key}" "${key}.pub"
-  ssh-keygen -t ed25519 -N '' -C "git-signing ${USER}@$(hostname)" -f "${key}"
+  ssh-keygen -t ed25519 -N '' -C "git-signing ${USER:-$(id -un)}@$(hostname) $(date +%Y-%m-%d)" -f "${key}"
 elif [ ! -s "${key}.pub" ]; then
   derived_out=$(ssh-keygen -y -P '' -f "${key}" 2>&1) || true
   case "${derived_out}" in

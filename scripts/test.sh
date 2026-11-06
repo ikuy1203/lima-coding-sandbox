@@ -74,7 +74,7 @@ test_git_config() {
 
   local key="${fake_home}/.ssh/id_ed25519_signing"
   local pub="${key}.pub"
-  if [ -f "${key}" ] && [ -f "${pub}" ]; then
+  if [ -f "${key}" ] && [ -f "${pub}" ] && grep -Eq 'git-signing [^ ]+@[^ ]+ [0-9]{4}-[0-9]{2}-[0-9]{2}$' "${pub}"; then
     # 一時 Git リポジトリで実際に署名付きコミットと検証を行う
     local repo_dir="${test_dir}/repo"
     mkdir -p "${repo_dir}"
@@ -88,7 +88,7 @@ test_git_config() {
     )
     log_pass "${suite}: initial setup and commit signing verification"
   else
-    log_fail "${suite}: initial setup failed (keys missing)"
+    log_fail "${suite}: initial setup failed (keys missing or invalid comment format)"
   fi
 
   # 1.2 冪等性: 2 回目を実行しても鍵が変わらず、allowed_signers の行が重複しない
@@ -1897,6 +1897,7 @@ case "$cmd" in
     fi
     if [ -n "${STUB_LIMA_GUEST_HOME:-}" ]; then
       shift 2
+      cd "${STUB_LIMA_GUEST_HOME}"
       HOME="${STUB_LIMA_GUEST_HOME}" \
         XDG_CONFIG_HOME="${STUB_LIMA_GUEST_HOME}/.config" \
         GIT_CONFIG_GLOBAL="${STUB_LIMA_GUEST_HOME}/.gitconfig" \
@@ -2378,18 +2379,36 @@ EOF
   local del_aborted_calls
   del_aborted_calls=$(grep -cx "delete" "${lima_log}" || true)
 
-  # Running 状態で y を入力して stop -> delete
+  # Running 状態で y を入力して stop -> delete（ゲスト内の署名鍵の指紋表示と stdin 保護も検証）
+  local del_guest_home="${test_dir}/del_guest_home"
+  mkdir -p "${del_guest_home}/.ssh"
+  ssh-keygen -q -t ed25519 -N '' -C "git-signing test@lima-coding-sandbox 2026-11-06" -f "${del_guest_home}/.ssh/id_ed25519_signing"
+  local del_expected_fp
+  del_expected_fp=$(ssh-keygen -lf "${del_guest_home}/.ssh/id_ed25519_signing.pub" | awk '{print $2}')
+
   : > "${lima_log}"
-  local del_confirmed_ok=0
-  (
+  local del_confirmed_ok=0 del_running_out=""
+  del_running_out=$(
     export PATH="${fake_bin}:${PATH}"
     export STUB_LIMACTL_LOG="${lima_log}"
     export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
-    printf 'y\n' | make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" >/dev/null 2>&1
+    export STUB_LIMA_GUEST_HOME="${del_guest_home}"
+    printf 'y\n' | make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" 2>&1
   ) && del_confirmed_ok=1
   local del_confirmed_stops del_confirmed_deletes
   del_confirmed_stops=$(grep -cx "stop" "${lima_log}" || true)
   del_confirmed_deletes=$(grep -cx "delete" "${lima_log}" || true)
+
+  # Running 状態で YES=1 の場合も削除前に署名鍵の指紋と削除案内が出力されること
+  : > "${lima_log}"
+  local del_running_yes_ok=0 del_running_yes_out=""
+  del_running_yes_out=$(
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${del_guest_home}"
+    make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" YES=1 </dev/null 2>&1
+  ) && del_running_yes_ok=1
 
   # Running 状態で limactl stop が失敗した場合は limactl delete を呼ばずに異常終了すること
   : > "${lima_log}"
@@ -2404,25 +2423,56 @@ EOF
   local del_after_stop_fail
   del_after_stop_fail=$(grep -cx "delete" "${lima_log}" || true)
 
-  # YES="1"（引用符付き）でもプロンプトなし削除が動くこと
+  # YES="1"（引用符付き）でもプロンプトなし削除が動き、Stopped 時も削除案内（タイトルと /user/ssh_signing_keys）が出力されること
   : > "${lima_log}"
-  local del_yes_ok=0
-  (
+  local del_yes_ok=0 del_yes_out=""
+  del_yes_out=$(
     export PATH="${fake_bin}:${PATH}"
     export STUB_LIMACTL_LOG="${lima_log}"
     export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Stopped"
-    make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" 'YES="1"' </dev/null >/dev/null 2>&1
+    make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" 'YES="1"' </dev/null 2>&1
   ) && del_yes_ok=1
   local del_yes_deletes
   del_yes_deletes=$(grep -cx "delete" "${lima_log}" || true)
+
+  # ゲスト側 ssh-keygen が非 UTF-8 バイト列（\xff）や制御文字を返しても UTF-8 ロケール下で中断せず削除が完走すること
+  local del_badbytes_bin="${test_dir}/del_badbytes_bin"
+  mkdir -p "${del_badbytes_bin}"
+  cat > "${del_badbytes_bin}/ssh-keygen" << 'EOF'
+#!/bin/sh
+printf '256 SHA256:AbCdEf123456 \377\376\233 bad-comment (ED25519)\n'
+EOF
+  chmod +x "${del_badbytes_bin}/ssh-keygen"
+  : > "${lima_log}"
+  local del_badbytes_ok=0 del_badbytes_out=""
+  del_badbytes_out=$(
+    export LC_ALL=en_US.UTF-8
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${del_guest_home}"
+    export STUB_LIMA_GUEST_PATH="${del_badbytes_bin}:${PATH}"
+    make -f "${REPO_ROOT}/Makefile" delete ENV_FILE="${empty_env}" YES=1 </dev/null 2>&1
+  ) && del_badbytes_ok=1
+  local del_badbytes_deletes
+  del_badbytes_deletes=$(grep -cx "delete" "${lima_log}" || true)
 
   if [ "${del_nonexistent_ok}" -eq 1 ] && [ "${del_nonexistent_calls}" -eq 0 ] && \
      [ "${del_aborted}" -eq 1 ] && [ "${del_aborted_calls}" -eq 0 ] && \
      printf '%s\n' "${del_prompt_out}" | grep -q "clone し直すだけでは復元できません" && \
      printf '%s\n' "${del_prompt_out}" | grep -q "make backup-auth" && \
+     printf '%s\n' "${del_prompt_out}" | grep -q "/user/ssh_signing_keys" && \
      [ "${del_confirmed_ok}" -eq 1 ] && [ "${del_confirmed_stops}" -eq 1 ] && [ "${del_confirmed_deletes}" -eq 1 ] && \
+     printf '%s\n' "${del_running_out}" | grep -qF "${del_expected_fp}" && \
+     [ "${del_running_yes_ok}" -eq 1 ] && \
+     printf '%s\n' "${del_running_yes_out}" | grep -qF "${del_expected_fp}" && \
+     printf '%s\n' "${del_running_yes_out}" | grep -q "/user/ssh_signing_keys" && \
      [ "${del_stop_fail_rc}" -ne 0 ] && [ "${del_after_stop_fail}" -eq 0 ] && \
-     [ "${del_yes_ok}" -eq 1 ] && [ "${del_yes_deletes}" -eq 1 ]; then
+     [ "${del_yes_ok}" -eq 1 ] && [ "${del_yes_deletes}" -eq 1 ] && \
+     printf '%s\n' "${del_yes_out}" | grep -q "タイトル: coding-sandbox <日付>" && \
+     printf '%s\n' "${del_yes_out}" | grep -q "/user/ssh_signing_keys" && \
+     [ "${del_badbytes_ok}" -eq 1 ] && [ "${del_badbytes_deletes}" -eq 1 ] && \
+     printf '%s\n' "${del_badbytes_out}" | grep -qF "SHA256:AbCdEf123456"; then
     log_pass "${suite}: make delete confirmation prompt, YES=1, and abort when stop fails"
   else
     log_fail "${suite}: make delete behavior failed"
@@ -2926,6 +2976,194 @@ EOF
     log_pass "${suite}: make restore-auth pre-start check, key/signers restoration, signing verification, and gh setup-git"
   else
     log_fail "${suite}: make restore-auth checks failed (missing_rc=${missing_restore_rc}, calls=${lima_calls_on_restore_check_fail}, pass_rc=${passphrase_restore_rc}, perm=${check_unrelated_perm}, gh_sym=${gh_child_symlink_rc}, gpg_rc=${invalid_gpgsign_restore_rc}, restore_ok=${restore_ok}, lines=${signers_lines})"
+  fi
+
+  # 4.20 make register-key (scripts/register-key.sh): 起動前検証（gh 未導入・空 NAME）・正常登録・公開鍵不備やスコープ不足時のエラー案内
+  log_test "${suite}: make register-key pre-start check, signing key registration, and scope error guidance"
+  local host_gh_args="${test_dir}/host_gh.args"
+  local host_gh_stdin="${test_dir}/host_gh.stdin"
+
+  # 1) ホストの PATH に gh が無い場合、VM 起動 (limactl) 前に失敗すること
+  local no_gh_bin="${test_dir}/no_gh_bin"
+  mkdir -p "${no_gh_bin}"
+  for tool in bash sh grep awk sed tr wc cat rm mkdir mktemp dirname pwd cd printf chmod install tar ssh-keygen date; do
+    local tool_path
+    if tool_path=$(command -v "${tool}" 2>/dev/null) && [ -x "${tool_path}" ]; then
+      ln -sf "${tool_path}" "${no_gh_bin}/${tool}"
+    fi
+  done
+  ln -sf "${fake_bin}/limactl" "${no_gh_bin}/limactl"
+  local make_bin
+  make_bin=$(command -v make)
+
+  : > "${lima_log}"
+  local no_gh_reg_rc=0
+  (
+    export PATH="${no_gh_bin}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    "${make_bin}" -f "${REPO_ROOT}/Makefile" register-key ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || no_gh_reg_rc=$?
+  local lima_calls_on_no_gh
+  lima_calls_on_no_gh=$(wc -l < "${lima_log}" | tr -d ' ')
+
+  # ホスト側 gh スタブを作成
+  cat > "${fake_bin}/gh" << 'EOF'
+#!/bin/bash
+set -eu
+for arg in "$@"; do
+  printf '%s\n' "$arg" >> "${STUB_HOST_GH_ARGS}"
+done
+cat > "${STUB_HOST_GH_STDIN}"
+if [ "${STUB_HOST_GH_FAIL:-0}" = "1" ]; then
+  echo >&2 "HTTP 404: Not Found (https://api.github.com/user/ssh_signing_keys)"
+  exit 1
+fi
+if [ "${STUB_HOST_GH_EXISTS:-0}" = "1" ]; then
+  echo "✓ Public key already exists on your account"
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "${fake_bin}/gh"
+
+  # 2) NAME="" の場合も VM 起動前に失敗すること
+  : > "${lima_log}"
+  local empty_name_reg_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" register-key ENV_FILE="${empty_env}" NAME= >/dev/null 2>&1
+  ) || empty_name_reg_rc=$?
+  local lima_calls_on_empty_reg_name
+  lima_calls_on_empty_reg_name=$(wc -l < "${lima_log}" | tr -d ' ')
+
+  # 3) 正常登録: ゲストの .ssh/id_ed25519_signing.pub が gh ssh-key add --type signing --title "<NAME> <YYYY-MM-DD>" に渡ること
+  : > "${host_gh_args}"
+  : > "${host_gh_stdin}"
+  local reg_ok=0 reg_out=""
+  reg_out=$(
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="sandbox2 Running"
+    export STUB_LIMA_GUEST_HOME="${guest_home_2}"
+    export STUB_HOST_GH_ARGS="${host_gh_args}"
+    export STUB_HOST_GH_STDIN="${host_gh_stdin}"
+    make -f "${REPO_ROOT}/Makefile" register-key ENV_FILE="${empty_env}" 'NAME=" sandbox2 "' 2>&1
+  ) && reg_ok=1
+
+  local guest_2_pub guest_2_fp reg_stdin_pub reg_gh_args_snapshot
+  guest_2_pub=$(cat "${guest_home_2}/.ssh/id_ed25519_signing.pub")
+  guest_2_fp=$(ssh-keygen -lf "${guest_home_2}/.ssh/id_ed25519_signing.pub" | awk '{print $2}')
+  reg_stdin_pub=$(cat "${host_gh_stdin}")
+  reg_gh_args_snapshot=$(cat "${host_gh_args}")
+
+  # 3b) 鍵コメント末尾に作成日（例: 2026-10-15、CRLF 改行付き）がある場合、その日付がタイトルに使われ、既存鍵登録済みの場合は「既に GitHub に登録されています」と表示され「登録しました」は表示されないこと
+  local dated_guest="${test_dir}/dated_guest"
+  mkdir -p "${dated_guest}/.ssh"
+  ssh-keygen -q -t ed25519 -N '' -C "git-signing test@lima-sandbox2 2026-10-15" -f "${dated_guest}/.ssh/id_ed25519_signing"
+  printf '%s\r\n' "$(cat "${dated_guest}/.ssh/id_ed25519_signing.pub")" > "${dated_guest}/.ssh/id_ed25519_signing.pub"
+  : > "${host_gh_args}"
+  local reg_exists_ok=0 reg_exists_out="" reg_dated_args=""
+  reg_exists_out=$(
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="sandbox2 Running"
+    export STUB_LIMA_GUEST_HOME="${dated_guest}"
+    export STUB_HOST_GH_ARGS="${host_gh_args}"
+    export STUB_HOST_GH_STDIN="${host_gh_stdin}"
+    export STUB_HOST_GH_EXISTS=1
+    make -f "${REPO_ROOT}/Makefile" register-key ENV_FILE="${empty_env}" NAME=sandbox2 2>&1
+  ) && reg_exists_ok=1
+  reg_dated_args=$(cat "${host_gh_args}")
+
+  # 4) ゲストが Stopped の状態で直接 scripts/register-key.sh を呼んだ場合は失敗し gh を呼ばないこと
+  : > "${host_gh_args}"
+  local stopped_reg_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Stopped"
+    export STUB_HOST_GH_ARGS="${host_gh_args}"
+    export STUB_HOST_GH_STDIN="${host_gh_stdin}"
+    bash "${REPO_ROOT}/scripts/register-key.sh" >/dev/null 2>&1
+  ) || stopped_reg_rc=$?
+  local gh_calls_on_stopped
+  gh_calls_on_stopped=$(wc -l < "${host_gh_args}" | tr -d ' ')
+
+  # 5) ゲストの公開鍵が破損している場合、または複数行の場合は gh を呼ばずに失敗すること
+  local bad_pub_guest="${test_dir}/bad_pub_guest"
+  mkdir -p "${bad_pub_guest}/.ssh"
+  printf 'not-a-valid-ssh-public-key\n' > "${bad_pub_guest}/.ssh/id_ed25519_signing.pub"
+  : > "${host_gh_args}"
+  local bad_pub_reg_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${bad_pub_guest}"
+    export STUB_HOST_GH_ARGS="${host_gh_args}"
+    export STUB_HOST_GH_STDIN="${host_gh_stdin}"
+    make -f "${REPO_ROOT}/Makefile" register-key ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || bad_pub_reg_rc=$?
+  local gh_calls_on_bad_pub
+  gh_calls_on_bad_pub=$(wc -l < "${host_gh_args}" | tr -d ' ')
+
+  local multi_pub_guest="${test_dir}/multi_pub_guest"
+  mkdir -p "${multi_pub_guest}/.ssh"
+  {
+    printf '%s\n' "${guest_2_pub}"
+    printf '%s\n' "${guest_2_pub}"
+  } > "${multi_pub_guest}/.ssh/id_ed25519_signing.pub"
+  : > "${host_gh_args}"
+  local multi_pub_reg_rc=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${multi_pub_guest}"
+    export STUB_HOST_GH_ARGS="${host_gh_args}"
+    export STUB_HOST_GH_STDIN="${host_gh_stdin}"
+    make -f "${REPO_ROOT}/Makefile" register-key ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || multi_pub_reg_rc=$?
+  local gh_calls_on_multi_pub
+  gh_calls_on_multi_pub=$(wc -l < "${host_gh_args}" | tr -d ' ')
+
+  # 6) gh ssh-key add がスコープ不足等で失敗した場合、非ゼロ終了し gh auth refresh の案内が出ること
+  local gh_fail_reg_rc=0 gh_fail_reg_err=""
+  gh_fail_reg_err=$(
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_GUEST_HOME="${guest_home_2}"
+    export STUB_HOST_GH_ARGS="${host_gh_args}"
+    export STUB_HOST_GH_STDIN="${host_gh_stdin}"
+    export STUB_HOST_GH_FAIL=1
+    make -f "${REPO_ROOT}/Makefile" register-key ENV_FILE="${empty_env}" 2>&1
+  ) || gh_fail_reg_rc=$?
+
+  if [ "${no_gh_reg_rc}" -ne 0 ] && [ "${lima_calls_on_no_gh}" -eq 0 ] && \
+     [ "${empty_name_reg_rc}" -ne 0 ] && [ "${lima_calls_on_empty_reg_name}" -eq 0 ] && \
+     [ "${reg_ok}" -eq 1 ] && \
+     [ "${reg_stdin_pub}" = "${guest_2_pub}" ] && \
+     printf '%s\n' "${reg_gh_args_snapshot}" | grep -qx "ssh-key" && \
+     printf '%s\n' "${reg_gh_args_snapshot}" | grep -qx "add" && \
+     printf '%s\n' "${reg_gh_args_snapshot}" | grep -qx -- "--type" && \
+     printf '%s\n' "${reg_gh_args_snapshot}" | grep -qx "signing" && \
+     printf '%s\n' "${reg_gh_args_snapshot}" | grep -qx -- "--title" && \
+     printf '%s\n' "${reg_gh_args_snapshot}" | grep -Eq '^sandbox2 [0-9]{4}-[0-9]{2}-[0-9]{2}$' && \
+     printf '%s\n' "${reg_out}" | grep -qF "${guest_2_fp}" && \
+     [ "${reg_exists_ok}" -eq 1 ] && \
+     printf '%s\n' "${reg_dated_args}" | grep -qx "sandbox2 2026-10-15" && \
+     printf '%s\n' "${reg_exists_out}" | grep -q "既に GitHub に登録されています" && \
+     ! printf '%s\n' "${reg_exists_out}" | grep -q "登録しました" && \
+     [ "${stopped_reg_rc}" -ne 0 ] && [ "${gh_calls_on_stopped}" -eq 0 ] && \
+     [ "${bad_pub_reg_rc}" -ne 0 ] && [ "${gh_calls_on_bad_pub}" -eq 0 ] && \
+     [ "${multi_pub_reg_rc}" -ne 0 ] && [ "${gh_calls_on_multi_pub}" -eq 0 ] && \
+     [ "${gh_fail_reg_rc}" -ne 0 ] && \
+     printf '%s\n' "${gh_fail_reg_err}" | grep -q "gh auth refresh -h github.com -s read:ssh_signing_key,write:ssh_signing_key"; then
+    log_pass "${suite}: make register-key pre-start check, signing key registration, and scope error guidance"
+  else
+    log_fail "${suite}: make register-key checks failed (no_gh_rc=${no_gh_reg_rc}/${lima_calls_on_no_gh}, empty_rc=${empty_name_reg_rc}/${lima_calls_on_empty_reg_name}, reg_ok=${reg_ok}, reg_exists=${reg_exists_ok}, stop_rc=${stopped_reg_rc}, bad_pub=${bad_pub_reg_rc}, multi_pub=${multi_pub_reg_rc}, gh_fail=${gh_fail_reg_rc})"
   fi
 }
 

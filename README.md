@@ -111,6 +111,7 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── terminfo.sh            # make terminfo（ホストの terminfo を検証して VM へコピー）
 │   ├── backup-auth.sh         # make backup-auth（認証情報・Git 署名鍵をホストへ退避・検証）
 │   ├── restore-auth.sh        # make restore-auth（退避した認証情報・Git 署名鍵を VM へ復元）
+│   ├── register-key.sh        # make register-key（Git 署名鍵をホストの gh で GitHub に登録）
 │   ├── lint.sh                # テンプレートとスクリプトの検査（CI でも実行する）
 │   └── test.sh                # プロビジョニングスクリプトと Makefile / scripts の回帰テスト（CI でも実行する）
 └── .github/
@@ -147,9 +148,10 @@ make stop     # 停止
 | `make restore-auth` | ホストに退避した認証情報と Git コミット署名鍵を VM に復元する（停止していれば先に起動する。[後述](#インスタンスを作り直す認証情報と作業データの退避復元)） |
 | `make stop` / `make restart` | 停止 / 再起動（再起動は、失敗したプロビジョニングのやり直しにも使える） |
 | `make status` | 状態を表示する |
-| `make delete` | 削除する（確認あり。`YES=1` を付けると確認を省略。[後述](#インスタンスを作り直す認証情報と作業データの退避復元)） |
+| `make delete` | 削除する（確認あり。起動中なら署名鍵の指紋を表示。`YES=1` を付けると確認を省略。[後述](#インスタンスを作り直す認証情報と作業データの退避復元)） |
 | `make recreate` | 削除してから作り直す（`coding-sandbox.yaml` や `provision/*.sh` の変更を反映するとき。[後述](#インスタンスを作り直す認証情報と作業データの退避復元)） |
-| `make pubkey` | Git のコミット署名用の公開鍵を表示する |
+| `make pubkey` | Git のコミット署名用の公開鍵を表示する（[後述](#git-のコミット署名)） |
+| `make register-key` | Git のコミット署名用の公開鍵を、ホストの `gh` で GitHub に Signing Key として登録する（停止していれば先に起動する。[後述](#git-のコミット署名)） |
 | `make logs` | プロビジョニングのログ（cloud-init）の末尾を表示する |
 | `make lint` | `scripts/lint.sh` を実行する |
 
@@ -330,7 +332,7 @@ make backup-auth recreate restore-auth
   rm -rf ~/.local/share/lima-coding-sandbox/auth-backup/coding-sandbox
   ```
 - **再ログインが必要なケース**: 退避した設定ファイルを復元しても、トークンの有効期限切れ・失効や CLI 側の保存仕様によっては認証エラーになる場合があります。その場合は VM 内で `gh auth login` や `copilot` の `/login` を再実行してください（Antigravity CLI は対象外のため、必要に応じて [Antigravity CLI](#antigravity-cli) の手順で再設定してください）。
-- **署名鍵を復元しない場合**: `make backup-auth` / `make restore-auth` を使わずに VM を作り直した場合は、新しい署名鍵が生成されます。[Git のコミット署名](#git-のコミット署名) の手順で新しい公開鍵を登録し、GitHub の [SSH and GPG keys](https://github.com/settings/keys) から古い VM の Signing Key を削除してください。
+- **署名鍵を復元しない場合**: `make backup-auth` / `make restore-auth` を使わずに VM を作り直した場合は、新しい署名鍵が生成されます。[Git のコミット署名](#git-のコミット署名) の手順（`make register-key` など）で新しい公開鍵を登録し、GitHub の [SSH and GPG keys](https://github.com/settings/keys)（またはホストの `gh api`）から古い VM の Signing Key を削除してください（[セキュリティ上の注意](#セキュリティ上の注意)を参照）。
 
 ## ホストのマウントが混入しないように
 
@@ -432,15 +434,35 @@ Git のユーザ名とメールアドレスは作成時に `--param` で渡し�
 ### Git のコミット署名
 
 VM 内の Git は、すべてのコミットとタグに署名するよう設定されています（`commit.gpgsign=true`、署名鍵は `~/.ssh/id_ed25519_signing`）。
-GitHub 上でコミットに **Verified** バッジを表示させるには、公開鍵を GitHub に Signing Key として登録します。
+鍵のコメントにはインスタンス名と作成日（`git-signing <user>@lima-<NAME> <YYYY-MM-DD>`）が入ります。
+GitHub 上でコミットに **Verified** バッジを表示させるには、公開鍵を GitHub に Signing Key として登録し、設定したメールアドレス（`git config --global user.email`）が GitHub アカウントで検証済み（Verified）になっていることを確認してください。
+
+#### ホストの `gh`（GitHub CLI）で登録する（`make register-key`）
+
+VM 内の `gh` ではなくホスト側の `gh` を使って登録することで、VM 内のトークン（エージェントも利用可能）に鍵を管理する強い権限を与えずに済みます。
+
+1. 初回のみ、ホストの `gh` のトークンに署名鍵を扱うスコープ（一覧に `read:ssh_signing_key`、登録に `write:ssh_signing_key`）を追加します（削除までホストの `gh` で行う場合は `admin:ssh_signing_key` も追加してください）:
+   ```sh
+   gh auth refresh -h github.com -s read:ssh_signing_key,write:ssh_signing_key
+   ```
+2. ホストから `make register-key` を実行します（タイトル `<NAME> <YYYY-MM-DD>` で Signing Key として登録されます。日付には鍵のコメントの作成日が使われ、コメントに日付が無ければ今日の日付になります。同じ鍵が登録済みなら何もしません）:
+   ```sh
+   make register-key
+   ```
+   `make` を使わない場合は次のコマンドで登録できます:
+   ```sh
+   limactl shell coding-sandbox cat .ssh/id_ed25519_signing.pub \
+     | gh ssh-key add --type signing --title "coding-sandbox $(date +%Y-%m-%d)"
+   ```
+
+#### ブラウザから手動で登録する（`make pubkey`）
 
 1. ホストから次のコマンドで公開鍵を表示します:
    ```sh
-   limactl shell coding-sandbox cat .ssh/id_ed25519_signing.pub
+   make pubkey   # または limactl shell coding-sandbox cat .ssh/id_ed25519_signing.pub
    ```
 2. ホストのブラウザで GitHub の [SSH and GPG keys](https://github.com/settings/keys) を開き、**New SSH key** をクリックします。
 3. **Key type** で **Signing Key** を選択し（Authentication Key ではなく Signing Key）、表示された公開鍵を貼り付けて登録します。
-4. 設定したメールアドレス（`git config --global user.email`）が、GitHub アカウントに登録され検証済み（Verified）になっていることを確認してください。
 
 VM 内での署名の検証確認:
 
@@ -805,7 +827,11 @@ limactl start --timeout=30m ./coding-sandbox.yaml
 - VM からはインターネットに接続できます。また、Lima の仕様上 `host.lima.internal`（`192.168.5.2`）はホストのループバックアドレスにつながっていますが、本サンドボックスでは VM 内の nftables により既定で接続を遮断しています。ただし VM 内のユーザはパスワードなしで sudo できるため、エージェントが意図してファイアウォールを解除することは防げません（誤操作の防止にとどまります）。また、Lima の NAT 仕様やホストのパケットフィルタ（pf）では VM からのループバック接続のみを識別して止めることができないため、認証のない機密サービスをホストで稼働させている場合は引き続き注意してください
 - 各 CLI の認証情報は VM 内に保存されます（Copilot CLI と gh は平文で保存される場合があります）。不要になったら `limactl delete` で VM ごと削除してください。また、`make backup-auth` でホストに退避した認証情報・署名鍵（既定は `~/.local/share/lima-coding-sandbox/auth-backup/<NAME>`）も、不要になったらホストから削除してください
 - gh でログインすると、そのトークン（既定のスコープは `repo`・`read:org`・`gist`）は、VM 内で同じユーザとして動くエージェントからも使えます。エージェントは、あなたの GitHub アカウントでアクセスできるリポジトリに push したり、issue や PR を作ったりできます。権限を絞りたいときは、対象のリポジトリと権限を限定した fine-grained PAT を、`gh auth login` の代わりに環境変数 `GH_TOKEN` で渡してください（`GH_TOKEN` は Copilot CLI の `/login` で保存したトークンよりも優先されるため、Copilot CLI が使うトークンも変わる点に注意してください）
-- Git のコミット署名鍵（`~/.ssh/id_ed25519_signing`）には、エージェントが非対話でコミットできるようパスフレーズを付けていません。そのため VM 内のエージェントもあなたの署名付きコミットを作成できます。GitHub の Verified バッジは「この VM で作成されたコミットである」ことを示し、人間が直接書いたことの証明にはなりません。不要になった VM を削除する際（または `make restore-auth` で鍵を引き継がずに作り直した際）は、GitHub の [SSH and GPG keys](https://github.com/settings/keys) から対応する古い Signing Key も削除してください
+- Git のコミット署名鍵（`~/.ssh/id_ed25519_signing`）には、エージェントが非対話でコミットできるようパスフレーズを付けていません。そのため VM 内のエージェントもあなたの署名付きコミットを作成できます。GitHub の Verified バッジは「この VM で作成されたコミットである」ことを示し、人間が直接書いたことの証明にはなりません。不要になった VM を削除する際（または `make restore-auth` で鍵を引き継がずに作り直した際）は、GitHub の [SSH and GPG keys](https://github.com/settings/keys) から対応する古い Signing Key も削除してください（`make delete` は起動中の VM を削除する前に `ssh-keygen -lf ~/.ssh/id_ed25519_signing.pub` で鍵の指紋を表示します）。ホストの `gh` で削除する場合、`gh ssh-key delete` は認証用の鍵（`/user/keys`）しか扱わないため、`gh api` で Signing Key の指紋・ID・タイトルを一覧して削除します（`admin:ssh_signing_key` スコープが必要。`gh auth refresh -h github.com -s admin:ssh_signing_key` で追加できます）:
+  ```sh
+  gh api --paginate /user/ssh_signing_keys --jq '.[] | "\(.key) id=\(.id) \(.title)"' | ssh-keygen -lf -
+  gh api -X DELETE /user/ssh_signing_keys/<ID>
+  ```
 
 ## 開発
 
