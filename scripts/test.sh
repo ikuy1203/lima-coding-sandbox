@@ -2489,7 +2489,13 @@ EOF
 #!/bin/bash
 set -eu
 if [ "${1:-}" = "-G" ]; then
+  if [ "${STUB_SSH_G_FAIL:-0}" = "1" ]; then
+    exit 255
+  fi
   echo "hostname ${STUB_SSH_G_HOSTNAME:-127.0.0.1}"
+  if [ -n "${STUB_SSH_G_PORT:-}" ]; then
+    echo "port ${STUB_SSH_G_PORT}"
+  fi
   exit 0
 fi
 printf '%s\n' "$@" > "${STUB_SSH_LOG}"
@@ -2518,14 +2524,21 @@ exit 0
 EOF
   chmod +x "${fake_bin}/herdr"
 
-  # ssh -G がホスト名をそのまま返す（Include 未設定）ときに失敗すること
-  local unconf_ssh_failed=0
+  # ssh -G がホスト名をそのまま返す（Include 未設定）ときに失敗すること（大文字を含む NAME で ssh -G が小文字化した場合も含む）
+  local unconf_ssh_failed=0 unconf_upper_ssh_failed=0
   (
     export PATH="${fake_bin}:${PATH}"
     export STUB_HERDR_LOG="${herdr_log}"
     export STUB_SSH_G_HOSTNAME="lima-coding-sandbox"
     bash "${REPO_ROOT}/scripts/herdr-remote.sh" >/dev/null 2>&1
   ) || unconf_ssh_failed=1
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_HERDR_LOG="${herdr_log}"
+    export STUB_SSH_G_HOSTNAME="lima-mybox"
+    NAME="MyBox" bash "${REPO_ROOT}/scripts/herdr-remote.sh" >/dev/null 2>&1
+  ) || unconf_upper_ssh_failed=1
 
   # ssh -G が 127.0.0.1 を返すときに herdr --remote lima-<NAME> が呼ばれること
   : > "${herdr_log}"
@@ -2540,6 +2553,7 @@ EOF
   ) && herdr_remote_ok=1
 
   if [ "${no_herdr_failed}" -eq 1 ] && [ "${unconf_ssh_failed}" -eq 1 ] && \
+     [ "${unconf_upper_ssh_failed}" -eq 1 ] && \
      [ "${herdr_remote_ok}" -eq 1 ] && grep -qx -- "--remote lima-sandbox2" "${herdr_log}"; then
     log_pass "${suite}: scripts/herdr-remote.sh prerequisite checks and remote invocation"
   else
@@ -3571,6 +3585,183 @@ EOF
     log_pass "${suite}: make versions outputs all 14 environment items and make help lists update/versions"
   else
     log_fail "${suite}: make versions or make help checks failed (missing=${ver_missing_rc}, stopped=${ver_stopped_rc}, ok=${ver_ok})"
+  fi
+
+  # 4.23 make ssh-config (scripts/ssh-config.sh): 起動状態確認・Include パス算出・ssh -G 状態判定・ssh.config 出力
+  log_test "${suite}: make ssh-config status checks, Include snippet, ssh -G detection, and ssh.config output"
+  local ssh_cfg_home="${test_dir}/ssh_cfg_home"
+  local ssh_cfg_default_dir="${ssh_cfg_home}/.lima/coding-sandbox"
+  local ssh_cfg_upper_dir="${ssh_cfg_home}/.lima/MyBox"
+  local ssh_cfg_home_sub_dir="${ssh_cfg_home}/custom-lima/sandbox3"
+  local ssh_cfg_custom_dir="${test_dir}/custom lima/sandbox2"
+  mkdir -p "${ssh_cfg_default_dir}" "${ssh_cfg_upper_dir}" "${ssh_cfg_home_sub_dir}" "${ssh_cfg_custom_dir}"
+
+  local ssh_cfg_badname_rc=0 ssh_cfg_missing_rc=0 ssh_cfg_stopped_rc=0 ssh_cfg_nofile_rc=0 ssh_cfg_emptyfile_rc=0
+  : > "${lima_log}"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    make -f "${REPO_ROOT}/Makefile" ssh-config ENV_FILE="${empty_env}" NAME="" >/dev/null 2>&1
+  ) || ssh_cfg_badname_rc=$?
+  local ssh_cfg_badname_calls
+  ssh_cfg_badname_calls=$(wc -l < "${lima_log}" | tr -d ' ')
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT=""
+    make -f "${REPO_ROOT}/Makefile" ssh-config ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || ssh_cfg_missing_rc=$?
+
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Stopped"
+    make -f "${REPO_ROOT}/Makefile" ssh-config ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || ssh_cfg_stopped_rc=$?
+
+  # ssh.config が存在しない場合・空ファイルの場合は失敗すること
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_DIR_OUTPUT="${ssh_cfg_default_dir}"
+    make -f "${REPO_ROOT}/Makefile" ssh-config ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || ssh_cfg_nofile_rc=$?
+
+  : > "${ssh_cfg_default_dir}/ssh.config"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_DIR_OUTPUT="${ssh_cfg_default_dir}"
+    make -f "${REPO_ROOT}/Makefile" ssh-config ENV_FILE="${empty_env}" >/dev/null 2>&1
+  ) || ssh_cfg_emptyfile_rc=$?
+
+  cat > "${ssh_cfg_default_dir}/ssh.config" << 'EOF'
+Host lima-coding-sandbox
+  IdentityFile "/Users/test/.lima/_config/user"
+  User test
+  Hostname 127.0.0.1
+  Port 60022
+EOF
+
+  cat > "${ssh_cfg_upper_dir}/ssh.config" << 'EOF'
+Host lima-MyBox
+  IdentityFile "/Users/test/.lima/_config/user"
+  User test
+  Hostname 127.0.0.1
+  Port 60024
+EOF
+
+  cat > "${ssh_cfg_home_sub_dir}/ssh.config" << 'EOF'
+Host lima-sandbox3
+  IdentityFile "/Users/test/.lima/_config/user"
+  User test
+  Hostname 127.0.0.1
+  Port 60025
+EOF
+
+  cat > "${ssh_cfg_custom_dir}/ssh.config" << 'EOF'
+Host lima-sandbox2
+  IdentityFile "/Users/test/.lima/_config/user"
+  User test
+  Hostname 127.0.0.1
+  Port 60023
+EOF
+
+  # 未設定状態（ssh -G がホスト名をそのまま返す）+ 既定 ~/.lima/<NAME> ディレクトリ
+  local ssh_cfg_unconf_ok=0 ssh_cfg_unconf_out=""
+  ssh_cfg_unconf_out=$(
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${ssh_cfg_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="coding-sandbox Running"
+    export STUB_LIMA_DIR_OUTPUT="${ssh_cfg_default_dir}"
+    export STUB_SSH_G_HOSTNAME="lima-coding-sandbox"
+    make -f "${REPO_ROOT}/Makefile" ssh-config ENV_FILE="${empty_env}" 2>&1
+  ) && ssh_cfg_unconf_ok=1
+
+  # 大文字を含む NAME（ssh -G は小文字化した lima-mybox を返す）で「設定済み」と誤判定せず「未設定」になること
+  local ssh_cfg_upper_ok=0 ssh_cfg_upper_out=""
+  ssh_cfg_upper_out=$(
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${ssh_cfg_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="MyBox Running"
+    export STUB_LIMA_DIR_OUTPUT="${ssh_cfg_upper_dir}"
+    export STUB_SSH_G_HOSTNAME="lima-mybox"
+    make -f "${REPO_ROOT}/Makefile" ssh-config ENV_FILE="${empty_env}" NAME="MyBox" 2>&1
+  ) && ssh_cfg_upper_ok=1
+
+  # HOME 配下の非既定ディレクトリ（~/custom-lima/sandbox3）+ ssh -G 失敗時（「状態: 不明」）
+  local ssh_cfg_unknown_ok=0 ssh_cfg_unknown_out=""
+  ssh_cfg_unknown_out=$(
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${ssh_cfg_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="sandbox3 Running"
+    export STUB_LIMA_DIR_OUTPUT="${ssh_cfg_home_sub_dir}"
+    export STUB_SSH_G_FAIL=1
+    make -f "${REPO_ROOT}/Makefile" ssh-config ENV_FILE="${empty_env}" NAME="sandbox3" 2>&1
+  ) && ssh_cfg_unknown_ok=1
+
+  # 設定済み状態（ssh -G が 127.0.0.1 を返す）+ カスタム NAME + 空白を含むディレクトリパス
+  local ssh_cfg_conf_ok=0 ssh_cfg_conf_out=""
+  ssh_cfg_conf_out=$(
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${ssh_cfg_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="sandbox2 Running"
+    export STUB_LIMA_DIR_OUTPUT="${ssh_cfg_custom_dir}"
+    export STUB_SSH_G_HOSTNAME="127.0.0.1"
+    export STUB_SSH_G_PORT="60023"
+    make -f "${REPO_ROOT}/Makefile" ssh-config ENV_FILE="${empty_env}" 'NAME="sandbox2"' 2>&1
+  ) && ssh_cfg_conf_ok=1
+
+  # 古いポートが ~/.ssh/config に残っている場合（「状態: ポート不一致」）
+  local ssh_cfg_mismatch_ok=0 ssh_cfg_mismatch_out=""
+  ssh_cfg_mismatch_out=$(
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${ssh_cfg_home}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT="sandbox2 Running"
+    export STUB_LIMA_DIR_OUTPUT="${ssh_cfg_custom_dir}"
+    export STUB_SSH_G_HOSTNAME="127.0.0.1"
+    export STUB_SSH_G_PORT="59999"
+    make -f "${REPO_ROOT}/Makefile" ssh-config ENV_FILE="${empty_env}" 'NAME="sandbox2"' 2>&1
+  ) && ssh_cfg_mismatch_ok=1
+
+  if [ "${ssh_cfg_badname_rc}" -ne 0 ] && [ "${ssh_cfg_badname_calls}" -eq 0 ] && \
+     [ "${ssh_cfg_missing_rc}" -ne 0 ] && [ "${ssh_cfg_stopped_rc}" -ne 0 ] && \
+     [ "${ssh_cfg_nofile_rc}" -ne 0 ] && [ "${ssh_cfg_emptyfile_rc}" -ne 0 ] && \
+     [ "${ssh_cfg_unconf_ok}" -eq 1 ] && [ "${ssh_cfg_upper_ok}" -eq 1 ] && \
+     [ "${ssh_cfg_unknown_ok}" -eq 1 ] && [ "${ssh_cfg_conf_ok}" -eq 1 ] && \
+     [ "${ssh_cfg_mismatch_ok}" -eq 1 ] && \
+     printf '%s\n' "${ssh_cfg_unconf_out}" | grep -qx "# ホスト名: lima-coding-sandbox" && \
+     printf '%s\n' "${ssh_cfg_unconf_out}" | grep -qx "# 設定ファイル: ~/.lima/coding-sandbox/ssh.config" && \
+     printf '%s\n' "${ssh_cfg_unconf_out}" | grep -q "^# 状態: 未設定" && \
+     printf '%s\n' "${ssh_cfg_unconf_out}" | grep -qx "#   Include ~/.lima/\*/ssh.config" && \
+     printf '%s\n' "${ssh_cfg_unconf_out}" | grep -qx "Host lima-coding-sandbox" && \
+     printf '%s\n' "${ssh_cfg_unconf_out}" | grep -qx "  Port 60022" && \
+     printf '%s\n' "${ssh_cfg_upper_out}" | grep -qx "# ホスト名: lima-MyBox" && \
+     printf '%s\n' "${ssh_cfg_upper_out}" | grep -q "^# 状態: 未設定" && \
+     printf '%s\n' "${ssh_cfg_upper_out}" | grep -qx "Host lima-MyBox" && \
+     printf '%s\n' "${ssh_cfg_unknown_out}" | grep -qx "# 設定ファイル: ~/custom-lima/sandbox3/ssh.config" && \
+     printf '%s\n' "${ssh_cfg_unknown_out}" | grep -q "^# 状態: 不明（ssh -G lima-sandbox3" && \
+     printf '%s\n' "${ssh_cfg_unknown_out}" | grep -qx "#   Include ~/custom-lima/\*/ssh.config" && \
+     printf '%s\n' "${ssh_cfg_unknown_out}" | grep -qx "Host lima-sandbox3" && \
+     printf '%s\n' "${ssh_cfg_conf_out}" | grep -qx "# ホスト名: lima-sandbox2" && \
+     printf '%s\n' "${ssh_cfg_conf_out}" | grep -q "^# 状態: 設定済み" && \
+     ! printf '%s\n' "${ssh_cfg_conf_out}" | grep -q "Include 行を追加する（初回のみ）" && \
+     printf '%s\n' "${ssh_cfg_conf_out}" | grep -Fqx "#   Include \"${test_dir}/custom lima/*/ssh.config\"" && \
+     printf '%s\n' "${ssh_cfg_conf_out}" | grep -qx "Host lima-sandbox2" && \
+     printf '%s\n' "${ssh_cfg_conf_out}" | grep -qx "  Port 60023" && \
+     printf '%s\n' "${ssh_cfg_mismatch_out}" | grep -q "^# 状態: ポート不一致" && \
+     printf '%s\n' "${help_out}" | grep -q "make ssh-config"; then
+    log_pass "${suite}: make ssh-config status checks, Include snippet, ssh -G detection, and ssh.config output"
+  else
+    log_fail "${suite}: make ssh-config checks failed (badname=${ssh_cfg_badname_rc}, calls=${ssh_cfg_badname_calls}, missing=${ssh_cfg_missing_rc}, stopped=${ssh_cfg_stopped_rc}, nofile=${ssh_cfg_nofile_rc}, empty=${ssh_cfg_emptyfile_rc}, unconf=${ssh_cfg_unconf_ok}, upper=${ssh_cfg_upper_ok}, unknown=${ssh_cfg_unknown_ok}, conf=${ssh_cfg_conf_ok}, mismatch=${ssh_cfg_mismatch_ok})"
   fi
 }
 

@@ -4,6 +4,7 @@
 #   $ make shell    # シェルに入る（停止していれば起動する）
 #   $ make herdr    # herdr のセッションに入る（停止していれば起動する）
 #   $ make herdr-remote  # ホストの herdr から VM のセッションにリモート接続する
+#   $ make ssh-config    # SSH 接続設定（VS Code / Cursor Remote - SSH 用）を表示する
 #   $ make forward PORT=3000  # VM のポートをホストの 127.0.0.1 に転送する
 #   $ make terminfo # ホストの terminfo を VM にコピーする
 #   $ make help     # ターゲットの一覧
@@ -51,7 +52,7 @@ export GIT_USER_NAME GIT_USER_EMAIL BLOCK_HOST_LOOPBACK AGENT_INSTRUCTIONS COPIL
 
 .NOTPARALLEL:
 .DEFAULT_GOAL := help
-.PHONY: help create start shell herdr herdr-remote forward _check-terminfo terminfo backup-auth _check-restore-auth restore-auth update versions stop restart status delete recreate pubkey _check-register-key register-key logs lint test
+.PHONY: help create start shell herdr herdr-remote ssh-config forward _check-terminfo terminfo backup-auth _check-restore-auth restore-auth update versions stop restart status delete recreate pubkey _check-register-key register-key logs lint test
 
 help: ## ターゲットの一覧を表示する
 	@grep -E '^[a-z-]+:.*## ' $(firstword $(MAKEFILE_LIST)) | awk -F ':.*## ' '{ printf "  make %-12s %s\n", $$1, $$2 }'
@@ -71,6 +72,9 @@ herdr: start ## herdr のセッションに入る（無ければ作る。停止�
 
 herdr-remote: start ## ホストの herdr から VM のセッションにリモート接続する（停止していれば起動する）
 	@./scripts/herdr-remote.sh
+
+ssh-config: ## SSH 接続設定（~/.ssh/config 用の Include と ssh.config の内容）を表示する（起動中のみ）
+	@./scripts/ssh-config.sh
 
 forward: start ## VM のポートをホストの 127.0.0.1 に転送する（PORT=<VM のポート> が必須。HOST_PORT で変えられる。Ctrl-C で終了）
 	@./scripts/forward.sh
