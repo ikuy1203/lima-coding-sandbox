@@ -1,21 +1,10 @@
 # コーディングエージェント用サンドボックス VM（Lima テンプレート）
 #
-#   $ limactl start ./coding-sandbox.yaml
-#   $ limactl shell coding-sandbox
+#   $ make start   # または limactl start ./coding-sandbox.yaml
+#   $ make shell   # または limactl shell coding-sandbox
 #
-# - Ubuntu 26.04 LTS
-# - ホストのディレクトリは一切マウントしない
-# - 基本的なツール（git / gh / build-essential / ripgrep / Python の venv・pipx / Node.js など）をインストールする
-# - herdr / Antigravity CLI / GitHub Copilot CLI / mise / Docker Engine を公式手順でインストールする
-# - Git のユーザ名・メールアドレス（--param で渡す）と、SSH 鍵によるコミット署名を設定する
-# - ホストの $TERM の terminfo が VM に無いとき（Ghostty など）は TERM=xterm-256color にする
-# - VM の中で再生した音を、ホストのスピーカーから鳴らす（再生のみ。マイクは使えない）
-# - エージェントは非 root の通常ユーザで実行する（Docker は sudo なしで使える）
-# - ゲストのポートをホストに自動で転送しない（make forward で必要なときだけ転送する）
-# - VM から host.lima.internal（ホストの 127.0.0.1）への接続を、VM の中の nftables で遮断する（param で無効にできる）
-# - VM の前提をまとめたエージェント向けの指示ファイルを配置できる（既定は無効。param で有効にできる）
-#
-# 詳細は README.md を参照。
+# ホストのディレクトリをマウントせず、コーディングエージェントを非 root の通常ユーザとして動かす隔離環境。
+# 構成・使い方・認証・セキュリティ設計などの詳細は README.md を参照。
 
 # template:_images/ubuntu-26.04 は Lima 2.2.0 から同梱
 minimumLimaVersion: 2.2.0
@@ -38,7 +27,7 @@ param:
   gitUserEmail: ""
   # VM（Docker のコンテナを含む）から host.lima.internal（ホストの 127.0.0.1 につながる）への接続を、
   # VM の中の nftables で遮断する（provision/host-loopback-firewall.sh）。"false" にすると遮断しない。
-  # make start で作成する場合は .env の BLOCK_HOST_LOOPBACK で指定できる。作成後に変える方法は README.md の「ネットワーク」を参照
+  # make start で作成する場合は .env の BLOCK_HOST_LOOPBACK で指定できる。作成後に変える方法は docs/security.md の「ネットワーク」を参照
   blockHostLoopback: "true"
   # VM の前提（マウントなし、docker ラッパーの制約、mise shims、手動ポート転送など）をまとめた
   # エージェント向けの指示ファイルを配置する（provision/agent-instructions.sh）。既定は配置しない（"false"）。
@@ -57,7 +46,7 @@ param:
 
 # ホストのディレクトリは一切マウントしない。
 # ただし $LIMA_HOME/_config/default.yaml・override.yaml（作成時は base.yaml も）にマウントの設定があると、
-# Lima はそれを結合してしまう。その場合は先頭の probe で検出し、起動をエラーにする（README.md を参照）。
+# Lima はそれを結合してしまう。その場合は先頭の probe で検出し、起動をエラーにする（docs/security.md を参照）。
 mounts: []
 
 # containerd は Docker Engine が管理するため、Lima 同梱の containerd / nerdctl は使わない
@@ -78,7 +67,7 @@ ssh:
 # - ルールは上から順に、最初に一致したものが使われる。$LIMA_HOME/_config/override.yaml のルールはこれより前に、
 #   default.yaml のルールはこれより後に置かれる
 # - SSH のポートは Lima が別に扱うため、この設定の影響を受けない
-# 必要なときは make forward PORT=<ポート> で転送する（README.md の「ネットワーク」を参照）
+# 必要なときは make forward PORT=<ポート> で転送する（docs/security.md の「ネットワーク」を参照）
 portForwards:
 - guestIP: 0.0.0.0
   guestIPMustBeZero: false
@@ -144,13 +133,16 @@ probes:
   hint: |
     Host directories must not be mounted in this instance. Stop it without using it, and check
     $LIMA_HOME/_config/default.yaml, override.yaml and base.yaml (LIMA_HOME defaults to ~/.lima)
-    and the --mount option. See "README.md" for details.
+    and the --mount option. See "docs/security.md" for details.
 - description: basic tools (git, gh, etc.) to be installed
   script: |
     #!/bin/bash
     set -eu -o pipefail
-    # provision/apt-packages.sh で入れるパッケージ（gh を含む）の主なコマンド
-    cmds=(git curl wget jq less ssh gcc make rg fd fdfind unzip zip tree shellcheck nft pip3 pipx node npm)
+    # provision/apt-packages.sh で入れるパッケージ（gh を含む）の主なコマンド。
+    # 完了マーカーファイルの確認ではなく実際のコマンドと公式 gh の動作を起動のたびに検証することで、
+    # 再起動後のバイナリ欠損や不整合も確実に検知する（#25）。
+    # apt-packages.sh・この cmds・README.md の「基本的なツール」表の整合性は scripts/lint.sh で検査する。
+    cmds=(git curl wget jq less ssh gcc g++ make rg fd fdfind unzip zip tree shellcheck nft python3 pip3 pipx node npm npx)
     check_gh_repo() {
       local repo_list="${GITHUB_CLI_REPO_LIST:-/etc/apt/sources.list.d/github-cli.list}"
       local keyring="${GITHUB_CLI_KEYRING:-/etc/apt/keyrings/githubcli-archive-keyring.gpg}"
@@ -610,18 +602,14 @@ message: |
   make forward PORT=<ポート>
   ------
   {{- if ne .Param.blockHostLoopback "false"}}
-  VM から host.lima.internal（ホストの 127.0.0.1）への接続は遮断しています（README.md の「ネットワーク」を参照）。
+  VM から host.lima.internal（ホストの 127.0.0.1）への接続は遮断しています（docs/security.md の「ネットワーク」を参照）。
   {{- end}}
   {{- if eq .Param.agentInstructions "true"}}
   エージェント向けの指示ファイル（~/.copilot/copilot-instructions.md、~/.gemini/config/rules/lima-coding-sandbox.md）を配置しています。
   {{- end}}
-  インストール済み:
-  - git, gh, gcc / make, rg, fd (fdfind), python3（venv / pip3 / pipx）, node / npm などの基本的なツール
-  - herdr, agy (Antigravity CLI), copilot (GitHub Copilot CLI), mise, docker
-  - aplay, mpg123 など（alsa-utils, mpg123）。VM の中で再生した音はホストのスピーカーから鳴ります
-  コミットは SSH 鍵で署名されます。GitHub で Verified と表示させるには、次の公開鍵を
-  https://github.com/settings/ssh/new で「Key type: Signing Key」として登録してください:
+  コミットは SSH 鍵で署名されます。GitHub で Verified と表示させるには、ホストで `make register-key` を実行するか、
+  次の公開鍵を https://github.com/settings/ssh/new で「Key type: Signing Key」として登録してください:
   ------
   limactl shell {{.Name}} cat .ssh/id_ed25519_signing.pub
   ------
-  初回の認証手順は README.md を参照してください。
+  インストールされているツールの一覧や初回の認証手順は README.md（および docs/authentication.md）を参照してください。

@@ -28,7 +28,7 @@ mounts=$(limactl template yq "./${TEMPLATE}" '.mounts[] | "- location: " + .loca
   exit 1
 }
 if [ -n "${mounts}" ]; then
-  echo >&2 "エラー: ホストのディレクトリをマウントする設定があります（README.md の「ホストのマウントが混入しないように」を参照）:"
+  echo >&2 "エラー: ホストのディレクトリをマウントする設定があります（docs/security.md の「ホストのマウントが混入しないように」を参照）:"
   printf '%s\n' "${mounts}" >&2
   exit 1
 fi
@@ -82,7 +82,7 @@ esac
 [ -n "${name}" ] || name=$(git config --global user.name 2>/dev/null || true)
 [ -n "${email}" ] || email=$(git config --global user.email 2>/dev/null || true)
 if [ -z "${name}" ] || [ -z "${email}" ]; then
-  echo >&2 "注意: Git のユーザ名またはメールアドレスが空です。VM の中で手動で設定してください（README.md の「Git のコミット署名」を参照）"
+  echo >&2 "注意: Git のユーザ名またはメールアドレスが空です。VM の中で手動で設定してください（docs/authentication.md の「Git のコミット署名」を参照）"
 fi
 
 args=(

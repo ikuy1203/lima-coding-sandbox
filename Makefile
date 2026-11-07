@@ -128,7 +128,7 @@ register-key: _check-register-key start ## Git のコミット署名用の公開
 logs: ## プロビジョニングのログ（cloud-init）の末尾を表示する
 	@./scripts/shell.sh sudo tail -n 100 /var/log/cloud-init-output.log
 
-lint: ## テンプレートとスクリプトを検査する
+lint: ## テンプレート・スクリプト・ドキュメント整合性を検査する
 	./scripts/lint.sh
 
 test: ## プロビジョニングスクリプトと Makefile の回帰テストを実行する
