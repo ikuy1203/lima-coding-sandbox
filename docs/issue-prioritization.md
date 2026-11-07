@@ -2,7 +2,7 @@
 
 本ドキュメントは、`lima-coding-sandbox` の Issue（計 21 件、#6〜#25・#29）について、プロジェクトの目的・セキュリティ・開発効率の観点から評価基準を定め、実装の優先順位とロードマップを整理したものです。
 
-> **最終更新: 2026-11-06** — 完了 17 件 / 未解決 4 件。Phase 1、Phase 2、Phase 3、#17、#12、#20 に続き、**Phase 4 の #19** が完了しました（次は Phase 4 の #11）。
+> **最終更新: 2026-11-07** — 完了 18 件 / 未解決 3 件。Phase 1、Phase 2、Phase 3 に続き、**Phase 4（#17, #12, #20, #19, #11）** がすべて完了しました（次は Phase 5 の #23）。
 
 ---
 
@@ -15,7 +15,7 @@
 | Phase 1: Quick Wins & エージェント摩擦解消 | #15, #7, #8, #6, #16, #22 | 6 / 6 | ✅ 完了 |
 | Phase 2: セキュリティ隔離 & 起動高速化 | #10, #9, #18 | 3 / 3 | ✅ 完了 |
 | Phase 3: プロビジョニング堅牢化 & CI 自動テスト | #13, #24, #25, #21 | 4 / 4 | ✅ 完了 |
-| Phase 4: 運用 DX & コードベース保守 | #17, #12, #20, #19, #11 | 4 / 5 | 進行中 |
+| Phase 4: 運用 DX & コードベース保守 | #17, #12, #20, #19, #11 | 5 / 5 | ✅ 完了 |
 | Phase 5: ドキュメント再編 & 実験的機能 | #23, #14, #29 | 0 / 3 | 未着手 |
 
 ### 完了済み Issue
@@ -39,15 +39,15 @@
 | [#12](https://github.com/ikuy1203/lima-coding-sandbox/issues/12) | [DX] VM 再作成（make recreate）時の認証情報・署名鍵バックアップ支援 | [#47](https://github.com/ikuy1203/lima-coding-sandbox/pull/47) | 2026-11-05 | `make backup-auth` / `make restore-auth`（`scripts/backup-auth.sh`, `scripts/restore-auth.sh`）を追加し、認証情報（gh, copilot）および Git 署名鍵を安全に退避・復元。`make delete` で未 push データと退避案内の警告を表示。`scripts/test.sh` に回帰テストを追加 |
 | [#20](https://github.com/ikuy1203/lima-coding-sandbox/issues/20) | [DX] Git の署名鍵の GitHub への登録・削除をホストの gh で支援する | [#48](https://github.com/ikuy1203/lima-coding-sandbox/pull/48) | 2026-11-06 | `make register-key`（`scripts/register-key.sh`）を追加し、ホストの `gh ssh-key add --type signing` で VM の署名用公開鍵を登録。`provision/git-config.sh` の鍵コメントと登録タイトルに作成日を付与。`make delete` で起動中 VM の鍵指紋と削除手順を表示 |
 | [#19](https://github.com/ikuy1203/lima-coding-sandbox/issues/19) | [DX] ツールを一括更新する make update と、バージョンを表示する make versions の追加 | [#49](https://github.com/ikuy1203/lima-coding-sandbox/pull/49) | 2026-11-06 | `make update`（`scripts/update.sh`）を追加し、VM 内の `herdr`・`copilot`・`mise`・`apt` パッケージを非対話で一括更新（`herdr` スキップ通知・再起動要否通知付き）。`make versions`（`scripts/versions.sh`）を追加し、ホストと VM 内の主要 14 項目のバージョンを一覧表示（個別ツールの取得失敗時フォールバック付き） |
+| [#11](https://github.com/ikuy1203/lima-coding-sandbox/issues/11) | [DX] VS Code / Cursor Remote - SSH 連携のサポート（make ssh-config の追加） | - | 2026-11-07 | `make ssh-config`（`scripts/ssh-config.sh`）を追加し、起動中 VM の SSH 接続設定（`~/.ssh/config` 用の `Include` 案内・設定状態および `ssh.config` の内容）を出力。`scripts/herdr-remote.sh` を含む `ssh -G` 判定の大文字 `NAME` 対応を実施。`README.md` に VS Code / Cursor の Remote - SSH 接続手順とセキュリティ上の注意点（自動ポート転送・GitHub 認証引き継ぎ・SSH エージェント転送）を追記 |
 
 ### 前回からの変更点
 
-- **#19（ツールを一括更新する make update と、バージョンを表示する make versions の追加）が完了**:
-  - `make update`（`scripts/update.sh`）を追加し、起動中の VM 内の `herdr`・`GitHub Copilot CLI`・`mise`・`apt` パッケージをホストから非対話で一括更新（サーバー再起動を伴う `herdr` 更新のスキップ通知、および `/var/run/reboot-required` 検知時の `make restart` 案内付き）。
-  - `make versions`（`scripts/versions.sh`）を追加し、ホスト側（`macOS` / `Linux`、`Lima`）と VM 内（`Ubuntu`、`カーネル`、`git`、`GitHub CLI`、`Python`、`Node.js`、`Docker Engine`、`herdr`、`mpg123`、`Antigravity CLI`、`GitHub Copilot CLI`、`mise`）の計 14 項目のバージョンを整形して一覧表示（個別ツールの欠落・失敗時も他項目を表示する耐障害性付き）。
-  - `README.md`・`Makefile` を更新し、`scripts/test.sh` に回帰テストを追加。
+- **#11（VS Code / Cursor Remote - SSH 連携のサポート）が完了し、Phase 4 が完了**:
+  - `make ssh-config`（`scripts/ssh-config.sh`）を追加し、起動中の VM についてホスト名（`lima-<NAME>`）、`~/.ssh/config` に追加する `Include` 行、`ssh -G` による設定状態（ポート不一致・構文エラー等の検出を含む）、および `<dir>/ssh.config` の内容を `ssh_config` 形式で表示できるようにした（あわせて `scripts/herdr-remote.sh` の `ssh -G` 判定も大文字を含む `NAME` に対応）。
+  - `README.md` に VS Code / Cursor（Remote - SSH）からの接続手順と、エディタ側の自動ポート転送（`remote.autoForwardPorts`）・GitHub / Git 認証情報の引き継ぎ・SSH エージェント転送に関する注意点を追記し、`scripts/test.sh` に回帰テストを追加。
 - **後続フェーズへの反映**:
-  - 次の着手推奨は **Phase 4 の #11**（VS Code / Cursor Remote - SSH 連携のサポート）。
+  - 次の着手推奨は **Phase 5 の #23**（ツール一覧などの重複記載の削減と README の分割）。
 
 ---
 
@@ -115,12 +115,12 @@ flowchart TD
         I21["#21 param によるバージョン固定 ✅"]
     end
 
-    subgraph Phase4["Phase 4: 運用 DX & コードベース保守"]
+    subgraph Phase4["Phase 4: 運用 DX & コードベース保守 (完了)"]
         I17["#17 Makefile シェル処理スクリプト化 ✅"]
         I12["#12 認証・署名鍵バックアップ ✅"]
         I20["#20 Git 署名鍵 GitHub 連携 ✅"]
         I19["#19 make update / versions ✅"]
-        I11["#11 Remote-SSH 連携支援"]
+        I11["#11 Remote-SSH 連携支援 ✅"]
     end
 
     subgraph Phase5["Phase 5: ドキュメント再編 & 実験的機能"]
@@ -145,8 +145,8 @@ flowchart TD
 
     classDef done fill:#d4edda,stroke:#28a745,color:#155724
     classDef next fill:#fff3cd,stroke:#ffc107,color:#856404
-    class I15,I7,I8,I6,I16,I22,I10,I9,I18,I13,I24,I25,I21,I17,I12,I20,I19 done
-    class I11 next
+    class I15,I7,I8,I6,I16,I22,I10,I9,I18,I13,I24,I25,I21,I17,I12,I20,I19,I11 done
+    class I23 next
 ```
 
 ### Phase 1: Quick Wins & エージェント摩擦解消（即効性） — ✅ 完了（2026-10-11）
@@ -174,14 +174,14 @@ flowchart TD
   - ✅ **#25 [Provisioning]**: probe および provision スクリプトでの `--version` 起動確認・公式リポジトリ確認・Git 署名設定の診断強化
   - ✅ **#21 [Provisioning]**: `coding-sandbox.yaml` の `param`（`copilotVersion`, `miseVersion`）や `.env` からツールバージョンを指定可能にし、完全一致検証と暗黙フォールバック拒否を実装
 
-### Phase 4: 運用 DX & コードベース保守（利便性） — 進行中
+### Phase 4: 運用 DX & コードベース保守（利便性） — ✅ 完了（2026-11-07）
 - **目的**: 開発者が日常的に VM を破棄・再作成しやすくし、Makefile のメンテナンス性を高める。
 - **対象**:
   - ✅ **#17 [CI]**: Makefile 内の複雑なインラインスクリプトを `scripts/` に切り出して shellcheck 対象化
   - ✅ **#12 [DX]**: `make backup-auth`, `make restore-auth` で認証・署名鍵の退避・復元を支援
   - ✅ **#20 [DX]**: ホスト側の `gh` を利用した Git 署名鍵の GitHub 登録・削除支援
   - ✅ **#19 [DX]**: `make update`, `make versions` の追加
-  - **#11 [DX]**: `make ssh-config` の追加と Remote-SSH ドキュメントの拡充
+  - ✅ **#11 [DX]**: `make ssh-config` の追加と Remote-SSH ドキュメントの拡充
 
 ### Phase 5: ドキュメント再編 & 実験的機能（仕上げ）
 - **目的**: 変更が一段落した段階でドキュメントを整理し、難易度の高い実験的検証を行う。

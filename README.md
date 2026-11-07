@@ -104,6 +104,7 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── stop.sh                # make stop（インスタンス停止）
 │   ├── delete.sh              # make delete（確認付きインスタンス削除）
 │   ├── herdr-remote.sh        # make herdr-remote（ホストの herdr から VM へリモート接続）
+│   ├── ssh-config.sh          # make ssh-config（SSH 接続設定と ~/.ssh/config 用 Include の表示）
 │   ├── forward.sh             # make forward（VM のポートをホストへ SSH 転送）
 │   ├── terminfo.sh            # make terminfo（ホストの terminfo を検証して VM へコピー）
 │   ├── backup-auth.sh         # make backup-auth（認証情報・Git 署名鍵をホストへ退避・検証）
@@ -141,6 +142,7 @@ make stop     # 停止
 | `make shell` | シェルに入る（停止していれば先に起動する） |
 | `make herdr` | herdr のセッションに入る（無ければ作る。停止していれば先に起動する） |
 | `make herdr-remote` | ホストの herdr から VM のセッションにリモート接続する（停止していれば先に起動する。[後述](#herdr)） |
+| `make ssh-config` | 起動中の VM の SSH 接続設定（`~/.ssh/config` に追加する `Include` 行と `~/.lima/<NAME>/ssh.config` の内容）を表示する（[後述](#vs-code--cursor-から接続するremote---ssh)） |
 | `make forward` | VM のポートをホストの `127.0.0.1` に転送する（`PORT=<VMのポート>` が必須。`HOST_PORT=<ホスト側ポート>` で変えられる。Ctrl-C で終了。[後述](#ネットワーク)） |
 | `make terminfo` | ホストの terminfo を VM にコピーする（既定はホストの `$TERM`。`TERM_NAME=<名前>` で変えられる。停止していれば先に起動する。[後述](#シェルに入る)） |
 | `make backup-auth` | VM 内の認証情報（`gh`・`copilot`）と Git コミット署名鍵をホストに退避する（既定は `~/.local/share/lima-coding-sandbox/auth-backup/<NAME>`。`AUTH_BACKUP_DIR=<パス>` で変えられる。[後述](#インスタンスを作り直す認証情報と作業データの退避復元)） |
@@ -270,6 +272,36 @@ make を使わないときは、次のコマンドでコピーできます:
 ```sh
 infocmp -x xterm-ghostty | limactl shell coding-sandbox tic -x -
 ```
+
+### VS Code / Cursor から接続する（Remote - SSH）
+
+ホストの VS Code や Cursor に **Remote - SSH** 拡張機能を入れておくと、VM 内のディレクトリ（`/home/<user>.guest/...`）を直接ワークスペースとして開けます。
+
+1. **SSH 設定の確認と `~/.ssh/config` の準備（初回のみ）**
+   VM が起動している状態で `make ssh-config` を実行すると、ホスト名（`lima-coding-sandbox`）、`~/.ssh/config` に追加すべき `Include` 行、現在の設定状態、および `~/.lima/coding-sandbox/ssh.config` の内容が表示されます。
+   ```sh
+   make ssh-config
+   ```
+   ホストの `~/.ssh/config` にまだ設定していない場合は、**先頭**に次の 1 行を追加します（Lima がインスタンスごとに生成する `ssh.config` を読み込みます。`make herdr-remote` と共通の設定です。なお、SSH のポート番号は VM の起動のたびに変わることがあるため、`ssh.config` の中身を `~/.ssh/config` に直接コピーせず、必ず `Include` を使ってください）:
+   ```ssh-config
+   Include ~/.lima/*/ssh.config
+   ```
+2. **エディタから接続する**
+   - コマンドパレット（`Cmd+Shift+P`）から **Remote-SSH: Connect to Host...** を実行し、一覧から **`lima-coding-sandbox`**（`NAME` を変えた場合は `lima-<NAME>`）を選択します。
+   - 新しいウィンドウが開いたら、**Open Folder**（またはコマンドライン）から VM 内のプロジェクトディレクトリ（例: `/home/<user>.guest/my-project`）を開きます。
+   - ホストのターミナルから直接開く場合は、次のコマンドを使います:
+     ```sh
+     # VS Code の場合
+     code --remote ssh-remote+lima-coding-sandbox /home/<user>.guest/my-project
+
+     # Cursor の場合
+     cursor --remote ssh-remote+lima-coding-sandbox /home/<user>.guest/my-project
+     ```
+
+> [!NOTE]
+> - **エディタ側の自動ポート転送**: 本サンドボックスでは Lima による自動ポート転送を無効化していますが、VS Code / Cursor の Remote - SSH には、接続中に VM 内で待ち受けられたポートを検知してホストへ自動転送する独自機能（`remote.autoForwardPorts`、既定で有効）があります。意図しないポート転送を防ぎたい場合は、設定で `"remote.autoForwardPorts": false` を指定し、必要なポートのみエディタの Ports ビューまたは `make forward PORT=<ポート>` で手動転送してください（[ネットワーク](#ネットワーク)を参照）。
+> - **エディタ側の GitHub / Git 認証情報の引き継ぎ**: VS Code / Cursor は既定で、ホスト側のエディタにサインインしている GitHub セッションの認証情報をリモート環境内の Git 操作や統合ターミナルへ引き継ぎます（`github.gitAuthentication` および `git.terminalAuthentication`、いずれも既定で有効）。VM 内のユーザはパスワードなしで `sudo` できるため、接続中はリモート拡張ホスト経由でこれらの認証情報に VM 内のエージェントからもアクセスしうると考える必要があります。Git 操作・統合ターミナルへの引き継ぎを止めたい場合や、VM 内の権限を `GH_TOKEN` 等で絞っている場合は、設定で `"github.gitAuthentication": false` と `"git.terminalAuthentication": false` を指定してください。なお、これら 2 つの設定は Git / ターミナル向けの認証引き継ぎを止めるものであり、VM 側（リモート拡張ホスト）で動作し GitHub セッションを使用する拡張機能（GitHub Copilot Chat や GitHub Pull Requests など）を有効にしている場合は、その拡張機能経由でもリモート側でトークンが扱われる点に注意してください（[セキュリティ上の注意](#セキュリティ上の注意)を参照）。
+> - **SSH エージェントの転送**: Remote - SSH はホストの `~/.ssh/config` を参照するため、`Host *` などで `ForwardAgent yes` を設定しているとホストの SSH エージェントが VM に転送されることがあります。その場合は `lima-*` を対象から外してください（[セキュリティ上の注意](#セキュリティ上の注意)を参照）。
 
 ### 停止・削除
 
@@ -836,11 +868,11 @@ limactl start --timeout=30m ./coding-sandbox.yaml
 
 - 隔離の境界は VM です。VM 内のユーザはパスワードなしで sudo できるため、エージェントも VM 内では root 相当の操作ができます
 - テンプレートでは、ホストのディレクトリのマウント、SSH エージェントの転送、ホストの `~/.ssh/*.pub` の読み込みを、いずれも無効にしています。マウントだけは Lima のグローバル設定から混入しうるため、起動時に検出しています（[ホストのマウントが混入しないように](#ホストのマウントが混入しないように)）
-- ホストの herdr からリモート接続（`make herdr-remote`）しても、SSH エージェントは転送されません（VM のペインでは `SSH_AUTH_SOCK` が設定されません）。この接続はホストの `~/.ssh/config` を使うため、`Host *` などで `ForwardAgent yes` を設定していると転送されることがあります。その場合は `lima-*` を対象から外してください
-- ポートの自動転送は無効化しています（`portForwards` 設定）。この設定はホスト側の Lima（hostagent）が適用するため、VM 内のユーザが sudo を使っても回避できません。ホストからアクセスしたいポートがあるときは `make forward PORT=<ポート>` を使用してください（[ネットワーク](#ネットワーク)）
+- ホストの herdr からリモート接続（`make herdr-remote`）したり、VS Code / Cursor の Remote - SSH で接続したりしても、Lima の設定（`~/.lima/<NAME>/ssh.config`）自体は SSH エージェントを転送しません（VM 内では `SSH_AUTH_SOCK` が設定されません）。ただし、これらの接続はホストの `~/.ssh/config` を使うため、`Host *` などで `ForwardAgent yes` を設定していると転送されることがあります。その場合は `lima-*` を対象から外してください
+- ポートの自動転送は無効化しています（`portForwards` 設定）。この設定はホスト側の Lima（hostagent）が適用するため、VM 内のユーザが sudo を使っても回避できません。ホストからアクセスしたいポートがあるときは `make forward PORT=<ポート>` を使用してください（[ネットワーク](#ネットワーク)）。なお、VS Code / Cursor の Remote - SSH で接続している間は、エディタ自身の自動ポート転送機能（`remote.autoForwardPorts`）が既定で働く点に注意してください（[VS Code / Cursor から接続する（Remote - SSH）](#vs-code--cursor-から接続するremote---ssh)）
 - VM からはインターネットに接続できます。また、Lima の仕様上 `host.lima.internal`（`192.168.5.2`）はホストのループバックアドレスにつながっていますが、本サンドボックスでは VM 内の nftables により既定で接続を遮断しています。ただし VM 内のユーザはパスワードなしで sudo できるため、エージェントが意図してファイアウォールを解除することは防げません（誤操作の防止にとどまります）。また、Lima の NAT 仕様やホストのパケットフィルタ（pf）では VM からのループバック接続のみを識別して止めることができないため、認証のない機密サービスをホストで稼働させている場合は引き続き注意してください
 - 各 CLI の認証情報は VM 内に保存されます（Copilot CLI と gh は平文で保存される場合があります）。不要になったら `limactl delete` で VM ごと削除してください。また、`make backup-auth` でホストに退避した認証情報・署名鍵（既定は `~/.local/share/lima-coding-sandbox/auth-backup/<NAME>`）も、不要になったらホストから削除してください
-- gh でログインすると、そのトークン（既定のスコープは `repo`・`read:org`・`gist`）は、VM 内で同じユーザとして動くエージェントからも使えます。エージェントは、あなたの GitHub アカウントでアクセスできるリポジトリに push したり、issue や PR を作ったりできます。権限を絞りたいときは、対象のリポジトリと権限を限定した fine-grained PAT を、`gh auth login` の代わりに環境変数 `GH_TOKEN` で渡してください（`GH_TOKEN` は Copilot CLI の `/login` で保存したトークンよりも優先されるため、Copilot CLI が使うトークンも変わる点に注意してください）
+- gh でログインすると、そのトークン（既定のスコープは `repo`・`read:org`・`gist`）は、VM 内で同じユーザとして動くエージェントからも使えます。エージェントは、あなたの GitHub アカウントでアクセスできるリポジトリに push したり、issue や PR を作ったりできます。権限を絞りたいときは、対象のリポジトリと権限を限定した fine-grained PAT を、`gh auth login` の代わりに環境変数 `GH_TOKEN` で渡してください（`GH_TOKEN` は Copilot CLI の `/login` で保存したトークンよりも優先されるため、Copilot CLI が使うトークンも変わる点に注意してください）。また、VS Code / Cursor の Remote - SSH で接続すると、既定ではホスト側エディタの GitHub 認証情報がリモート環境の Git / ターミナルやリモート拡張ホスト上の拡張機能へ引き継がれるため、権限を絞る場合はエディタ側の `"github.gitAuthentication": false`・`"git.terminalAuthentication": false` の設定や、VM 側で動作する GitHub 連携拡張機能の扱いに注意してください（[VS Code / Cursor から接続する（Remote - SSH）](#vs-code--cursor-から接続するremote---ssh)）
 - Git のコミット署名鍵（`~/.ssh/id_ed25519_signing`）には、エージェントが非対話でコミットできるようパスフレーズを付けていません。そのため VM 内のエージェントもあなたの署名付きコミットを作成できます。GitHub の Verified バッジは「この VM で作成されたコミットである」ことを示し、人間が直接書いたことの証明にはなりません。不要になった VM を削除する際（または `make restore-auth` で鍵を引き継がずに作り直した際）は、GitHub の [SSH and GPG keys](https://github.com/settings/keys) から対応する古い Signing Key も削除してください（`make delete` は起動中の VM を削除する前に `ssh-keygen -lf ~/.ssh/id_ed25519_signing.pub` で鍵の指紋を表示します）。ホストの `gh` で削除する場合、`gh ssh-key delete` は認証用の鍵（`/user/keys`）しか扱わないため、`gh api` で Signing Key の指紋・ID・タイトルを一覧して削除します（`admin:ssh_signing_key` スコープが必要。`gh auth refresh -h github.com -s admin:ssh_signing_key` で追加できます）:
   ```sh
   gh api --paginate /user/ssh_signing_keys --jq '.[] | "\(.key) id=\(.id) \(.title)"' | ssh-keygen -lf -

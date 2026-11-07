@@ -17,8 +17,10 @@ if ! command -v herdr >/dev/null 2>&1; then
 fi
 
 host="lima-${NAME}"
+host_lower=$(printf '%s' "${host}" | LC_ALL=C tr '[:upper:]' '[:lower:]')
 out=$(ssh -G "${host}") || exit $?
-if [ "$(printf '%s\n' "${out}" | awk '$1 == "hostname" { print $2 }')" = "${host}" ]; then
+resolved_lower=$(printf '%s\n' "${out}" | awk '$1 == "hostname" { print $2; exit }' | LC_ALL=C tr '[:upper:]' '[:lower:]')
+if [ "${resolved_lower}" = "${host_lower}" ]; then
   echo >&2 "エラー: ssh で ${host} に接続する設定がありません。ホストの ~/.ssh/config の先頭に次の 1 行を追加してください:"
   echo >&2 "  Include ~/.lima/*/ssh.config"
   exit 1
