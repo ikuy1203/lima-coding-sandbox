@@ -209,7 +209,7 @@ run_diag_test() {
     fi
 
     echo >&2 "notice: Git commit signing mechanism is verified, but user identity is not configured yet."
-    echo >&2 "        Please configure your name and email inside the VM (see README.md):"
+    echo >&2 "        Please configure your name and email inside the VM (see docs/authentication.md):"
     if [ -z "${configured_name}" ]; then
       echo >&2 "          git config --global user.name \"<Your Name>\""
     fi

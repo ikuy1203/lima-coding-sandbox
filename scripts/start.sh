@@ -15,7 +15,7 @@ mounts=$(limactl list "${NAME}" --format "${mount_format}") || {
   exit 1
 }
 if [ -n "${mounts}" ]; then
-  echo >&2 "エラー: ホストのディレクトリをマウントする設定があります（README.md の「ホストのマウントが混入しないように」を参照）:"
+  echo >&2 "エラー: ホストのディレクトリをマウントする設定があります（docs/security.md の「ホストのマウントが混入しないように」を参照）:"
   printf '%s\n' "${mounts}" >&2
   st=$(get_status "${NAME}") || exit $?
   if [ "${st}" = Running ]; then

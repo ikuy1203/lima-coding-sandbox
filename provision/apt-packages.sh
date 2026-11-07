@@ -16,7 +16,8 @@
 #   一括インストール失敗時にはソフトウェアグループごとのフォールバックインストールを行う。
 #   フォールバックにより必要な全パッケージが揃った場合は正常終了する。
 #
-# パッケージを削除・変更したときは、coding-sandbox.yaml の probe（basic tools ...）のコマンド一覧も直すこと。
+# パッケージを削除・変更したときは、coding-sandbox.yaml の probe（basic tools ...）のコマンド一覧と
+# README.md の「基本的なツール」の表も直すこと（scripts/lint.sh で整合性を検査する）。
 #
 # Lima は起動のたびにこのスクリプトを実行するため、冪等に作ってある。
 set -eux -o pipefail
