@@ -18,10 +18,7 @@ fi
 key_fp=""
 if [ "${st}" = Running ]; then
   raw_fp=$(limactl shell "${NAME}" ssh-keygen -lf .ssh/id_ed25519_signing.pub </dev/null 2>/dev/null || true)
-  cand_fp=$(printf '%s\n' "${raw_fp}" | LC_ALL=C awk 'NR==1 {print $2}' 2>/dev/null || true)
-  if [[ "${cand_fp}" =~ ^SHA256:[A-Za-z0-9+/=]+$ ]]; then
-    key_fp="${cand_fp}"
-  fi
+  key_fp=$(extract_pubkey_fingerprint "${raw_fp}" || true)
 fi
 
 if [ "${yes_val}" != 1 ]; then

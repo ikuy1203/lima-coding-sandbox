@@ -2158,10 +2158,13 @@ EOF
     log_fail "${suite}: scripts/lib.sh normalize unit tests failed (${norm_failures} failure(s))"
   fi
 
-  # 4.9 scripts/lib.sh: get_status と resolve_name の単体テスト（状態取得・未作成・エラー伝播・空 NAME 拒否）
-  log_test "${suite}: scripts/lib.sh get_status and resolve_name unit tests"
+  # 4.9 scripts/lib.sh: get_status / resolve_name / require_running / extract_pubkey_fingerprint / validate_auth_backup_items の単体テスト
+  log_test "${suite}: scripts/lib.sh get_status, resolve_name, require_running, extract_pubkey_fingerprint, and validate_auth_backup_items unit tests"
   local st_running st_stopped st_missing st_fail_rc=0
   local rn_default rn_quoted rn_empty_rc=0 rn_quoted_empty_rc=0
+  local rr_running_rc=0 rr_stopped_rc=0 rr_stopped_err="" rr_missing_rc=0 rr_missing_err="" rr_fail_rc=0
+  local fp_valid="" fp_nonutf8="" fp_invalid_rc=0 fp_empty_rc=0
+  local vab_dir="${test_dir}/vab_unit" vab_ok_rc=0 vab_empty_rc=0 vab_sym_rc=0 vab_awk_fail_rc=0 vab_items_joined="" vab_labels_joined=""
   st_running=$(
     export PATH="${fake_bin}:${PATH}"
     export STUB_LIMACTL_LOG="${lima_log}"
@@ -2192,6 +2195,55 @@ EOF
   (NAME="" resolve_name >/dev/null 2>&1) || rn_empty_rc=$?
   (NAME=' "  " ' resolve_name >/dev/null 2>&1) || rn_quoted_empty_rc=$?
 
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT=$'coding-sandbox2 Stopped\ncoding-sandbox Running'
+    require_running "coding-sandbox" >/dev/null 2>&1
+  ) || rr_running_rc=$?
+  rr_stopped_err=$(
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT=$'coding-sandbox2 Stopped\ncoding-sandbox Running'
+    require_running "coding-sandbox2" 2>&1
+  ) || rr_stopped_rc=$?
+  rr_missing_err=$(
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_STATUS_OUTPUT=$'coding-sandbox2 Stopped\ncoding-sandbox Running'
+    require_running "nonexistent" 2>&1
+  ) || rr_missing_rc=$?
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export STUB_LIMACTL_LOG="${lima_log}"
+    export STUB_LIMA_LIST_FAIL=1
+    require_running "coding-sandbox" >/dev/null 2>&1
+  ) || rr_fail_rc=$?
+
+  fp_valid=$(extract_pubkey_fingerprint "256 SHA256:AbCdEf0123456789+/= user@host (ED25519)")
+  fp_nonutf8=$(extract_pubkey_fingerprint "$(printf '256 SHA256:ZyXwVu9876543210+/= \377\376\233 (ED25519)\n')")
+  (extract_pubkey_fingerprint "256 MD5:aa:bb:cc user@host" >/dev/null 2>&1) || fp_invalid_rc=$?
+  (extract_pubkey_fingerprint "" >/dev/null 2>&1) || fp_empty_rc=$?
+
+  mkdir -p "${vab_dir}/ok/.config/gh" "${vab_dir}/ok/.copilot" "${vab_dir}/key/.ssh" "${vab_dir}/empty" "${vab_dir}/sym"
+  printf 'token\n' > "${vab_dir}/ok/.config/gh/hosts.yml"
+  printf '{"oauth":true}\n' > "${vab_dir}/ok/.copilot/config.json"
+  ssh-keygen -q -t ed25519 -N '' -C 'unit@test' -f "${vab_dir}/key/.ssh/id_ed25519_signing"
+  ln -s /tmp "${vab_dir}/sym/.copilot"
+  if validate_auth_backup_items "${vab_dir}/ok" >/dev/null 2>&1; then
+    vab_items_joined="${AUTH_VALIDATED_ITEMS[*]}"
+    vab_labels_joined="${AUTH_VALIDATED_LABELS[*]}"
+  else
+    vab_ok_rc=$?
+  fi
+  (validate_auth_backup_items "${vab_dir}/empty" >/dev/null 2>&1) || vab_empty_rc=$?
+  (validate_auth_backup_items "${vab_dir}/sym" >/dev/null 2>&1) || vab_sym_rc=$?
+  (
+    awk() { printf 'ssh-ed25519 AAAA\n'; return 42; }
+    validate_auth_backup_items "${vab_dir}/key" >/dev/null 2>&1
+  ) || vab_awk_fail_rc=$?
+
+  # shellcheck disable=SC2088
   if [ "${st_running}" = "Running" ] && \
      [ "${st_stopped}" = "Stopped" ] && \
      [ -z "${st_missing}" ] && \
@@ -2199,10 +2251,26 @@ EOF
      [ "${rn_default}" = "coding-sandbox" ] && \
      [ "${rn_quoted}" = "sandbox2" ] && \
      [ "${rn_empty_rc}" -ne 0 ] && \
-     [ "${rn_quoted_empty_rc}" -ne 0 ]; then
-    log_pass "${suite}: scripts/lib.sh get_status and resolve_name unit tests"
+     [ "${rn_quoted_empty_rc}" -ne 0 ] && \
+     [ "${rr_running_rc}" -eq 0 ] && \
+     [ "${rr_stopped_rc}" -ne 0 ] && \
+     [[ "${rr_stopped_err}" == *"動いていません"* ]] && \
+     [ "${rr_missing_rc}" -ne 0 ] && \
+     [[ "${rr_missing_err}" == *"はありません"* ]] && \
+     [ "${rr_fail_rc}" -ne 0 ] && \
+     [ "${fp_valid}" = "SHA256:AbCdEf0123456789+/=" ] && \
+     [ "${fp_nonutf8}" = "SHA256:ZyXwVu9876543210+/=" ] && \
+     [ "${fp_invalid_rc}" -ne 0 ] && \
+     [ "${fp_empty_rc}" -ne 0 ] && \
+     [ "${vab_ok_rc}" -eq 0 ] && \
+     [ "${vab_items_joined}" = ".config/gh .copilot/config.json" ] && \
+     [ "${vab_labels_joined}" = "~/.config/gh ~/.copilot/config.json" ] && \
+     [ "${vab_empty_rc}" -ne 0 ] && \
+     [ "${vab_sym_rc}" -ne 0 ] && \
+     [ "${vab_awk_fail_rc}" -eq 42 ]; then
+    log_pass "${suite}: scripts/lib.sh get_status, resolve_name, require_running, extract_pubkey_fingerprint, and validate_auth_backup_items unit tests"
   else
-    log_fail "${suite}: scripts/lib.sh get_status and resolve_name unit tests failed"
+    log_fail "${suite}: scripts/lib.sh get_status, resolve_name, require_running, extract_pubkey_fingerprint, and validate_auth_backup_items unit tests failed"
   fi
 
   # 4.10 空の NAME 指定時（make delete NAME= YES=1 等）に既定 VM を操作せず即エラー終了すること

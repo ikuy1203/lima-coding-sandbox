@@ -106,7 +106,7 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── mise.sh                # mode: user
 │   └── agent-instructions.sh  # mode: user    エージェント向け指示ファイル（既定は無効）
 ├── scripts/                   # Makefile から呼び出す操作スクリプトと、検査・テストスクリプト
-│   ├── lib.sh                 # 共通関数（インスタンスの状態取得、入力値の正規化、NAME・AUTH_BACKUP_DIR 検証）
+│   ├── lib.sh                 # 共通関数（状態取得・起動確認、入力値正規化、退避先・退避データ検証、鍵指紋抽出）
 │   ├── create.sh              # make create（マウント検証・入力値正規化・インスタンス作成）
 │   ├── start.sh               # make start（マウント検証・インスタンス起動）
 │   ├── shell.sh               # make shell / herdr / pubkey / logs（インスタンス内でシェルまたはコマンドを実行）
