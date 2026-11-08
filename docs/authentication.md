@@ -86,11 +86,10 @@ agy
 
 SSH 経由だと判定されると、認可用の URL が表示されます。ホストのブラウザで開いてサインインし、表示されたコードを CLI に貼り付けてください。
 
-> [!WARNING]
+> [!NOTE]
 > Linux 版の Antigravity CLI は、ログイン情報の保存に Secret Service（GNOME Keyring など）と D-Bus セッションを使います（[Troubleshooting](https://antigravity.google/docs/cli/troubleshooting)）。
-> この VM には D-Bus セッションはありますが、Secret Service を提供するキーリングは入れていません。
-> キーリングが無くても認証フロー（URL の表示とコードの貼り付け）が始まることは確認しましたが、ログイン情報が保存されるかどうかは未確認です。
-> 毎回ログインを求められる場合は、次の Gemini API キー方式を使ってください。
+> この VM には Secret Service を提供するキーリングは入れていませんが、一度ログインすれば CLI の終了・再起動や VM の停止・再起動（`make stop` → `make shell`）の後もログイン状態が維持されることを確認しています。
+> もしキーリングに関するエラーが出たり毎回ログインを求められたりする場合は、次の Gemini API キー方式を使ってください。
 
 キーリングを使わない方法として、Gemini API キーでも認証できます（[Installation and auth](https://antigravity.google/docs/cli/install)）。
 
