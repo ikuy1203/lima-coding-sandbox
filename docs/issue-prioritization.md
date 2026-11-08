@@ -2,7 +2,7 @@
 
 本ドキュメントは、`lima-coding-sandbox` の Issue（計 21 件、#6〜#25・#29）について、プロジェクトの目的・セキュリティ・開発効率の観点から評価基準を定め、実装の優先順位とロードマップを整理したものです。
 
-> **最終更新: 2026-11-07** — 完了 19 件 / 未解決 2 件。Phase 1〜Phase 4 に続き、**Phase 5 の #23** が完了しました（残りは #14, #29）。
+> **最終更新: 2026-11-08** — 完了 20 件 / 未解決 1 件。Phase 1〜Phase 4 に続き、**Phase 5 の #23, #29** が完了しました（残りは #14）。
 
 ---
 
@@ -16,7 +16,7 @@
 | Phase 2: セキュリティ隔離 & 起動高速化 | #10, #9, #18 | 3 / 3 | ✅ 完了 |
 | Phase 3: プロビジョニング堅牢化 & CI 自動テスト | #13, #24, #25, #21 | 4 / 4 | ✅ 完了 |
 | Phase 4: 運用 DX & コードベース保守 | #17, #12, #20, #19, #11 | 5 / 5 | ✅ 完了 |
-| Phase 5: ドキュメント再編 & 実験的機能 | #23, #14, #29 | 1 / 3 | 進行中 |
+| Phase 5: ドキュメント再編 & 実験的機能 | #23, #14, #29 | 2 / 3 | 進行中 |
 
 ### 完了済み Issue
 
@@ -41,15 +41,15 @@
 | [#19](https://github.com/ikuy1203/lima-coding-sandbox/issues/19) | [DX] ツールを一括更新する make update と、バージョンを表示する make versions の追加 | [#49](https://github.com/ikuy1203/lima-coding-sandbox/pull/49) | 2026-11-06 | `make update`（`scripts/update.sh`）を追加し、VM 内の `herdr`・`copilot`・`mise`・`apt` パッケージを非対話で一括更新（`herdr` スキップ通知・再起動要否通知付き）。`make versions`（`scripts/versions.sh`）を追加し、ホストと VM 内の主要 14 項目のバージョンを一覧表示（個別ツールの取得失敗時フォールバック付き） |
 | [#11](https://github.com/ikuy1203/lima-coding-sandbox/issues/11) | [DX] VS Code / Cursor Remote - SSH 連携のサポート（make ssh-config の追加） | [#50](https://github.com/ikuy1203/lima-coding-sandbox/pull/50) | 2026-11-07 | `make ssh-config`（`scripts/ssh-config.sh`）を追加し、起動中 VM の SSH 接続設定（`~/.ssh/config` 用の `Include` 案内・設定状態および `ssh.config` の内容）を出力。`scripts/herdr-remote.sh` を含む `ssh -G` 判定の大文字 `NAME` 対応を実施。`README.md` に VS Code / Cursor の Remote - SSH 接続手順とセキュリティ上の注意点（自動ポート転送・GitHub 認証引き継ぎ・SSH エージェント転送）を追記 |
 | [#23](https://github.com/ikuy1203/lima-coding-sandbox/issues/23) | [Docs] ツール一覧などの重複記載の削減と README の分割 | [#51](https://github.com/ikuy1203/lima-coding-sandbox/pull/51) | 2026-11-07 | `coding-sandbox.yaml` の先頭コメント・`message:` および `README.md` 内の重複一覧を削減。`README.md` から認証（`docs/authentication.md`）・セキュリティ（`docs/security.md`）・トラブルシューティング（`docs/troubleshooting.md`）を分割。`scripts/lint.sh` にファイル構成・Makefile ターゲット・パッケージ/probe コマンド・Markdown リンクの整合性検査を追加し、`scripts/test.sh` に回帰テストを追加 |
+| [#29](https://github.com/ikuy1203/lima-coding-sandbox/issues/29) | [DX] Makefile を justfile に移行するか検討する（#17 の後） | - | 2026-11-08 | #17（`scripts/*.sh` への分離）および #11, #12, #19, #20, #23 完了後の再評価を実施。可読性・`shellcheck`・回帰テストの課題は現行の薄い `Makefile` + `scripts/*.sh` 構成で完全に解決しており、位置引数の要件やサブディレクトリ実行の需要もない一方、`just` 移行には新規依存（`brew install just`）の追加・変数指定順の非互換・`.env` 読み込み再実装等のコストが伴うため、移行せず現行構成を維持する結論でクローズ |
 
 ### 前回からの変更点
 
-- **#23（ツール一覧などの重複記載の削減と README の分割）が完了**:
-  - `coding-sandbox.yaml` の先頭コメントと `message:`、および `README.md` の「構成」表・「作成・起動」の `probes` 列挙における重複記載を削減し、人が読む一覧を `README.md` に集約。
-  - 肥大化していた `README.md`（910 行）から、詳細手順・仕様を `docs/authentication.md`（初回認証・Git 署名鍵・退避と復元）、`docs/security.md`（セキュリティ上の注意・マウント混入防止・ネットワーク隔離）、`docs/troubleshooting.md`（トラブルシューティング・プロビジョニング検証仕様）に分割。
-  - `scripts/lint.sh` で `provision/*.sh`・`scripts/*.sh`・`docs/*.md`・`Makefile` ターゲット・`base_packages` / probe コマンド・Markdown 内部リンク/見出しアンカーの整合性を機械的に検査する仕組みを追加し、`scripts/test.sh` に回帰テストを追加。
+- **#29（Makefile を justfile に移行するか検討する）の検討を完了し、現行構成を維持する判断でクローズ**:
+  - #17（PR #46）によりすべてのシェル処理が `scripts/*.sh` に分離され、`Makefile` は 1 行呼び出しの薄いラッパーとなったことで、可読性・`shellcheck` 検査・単体/回帰テストの課題は外部依存を追加することなく解決済みであることを確認。
+  - 後続の #12・#20・#19・#11 も位置引数を必要とせず実装完了しており、`scripts/delete.sh` の動的な署名鍵指紋取得も `just` の静的な `[confirm]` では代替できない一方、「薄い `justfile`」への移行でも必須依存の増加・`just KEY=VALUE <target>` の指定順非互換・`.env` 読み込みの再実装・約 300 箇所の表記修正が生じるため、現行の `Makefile` + `scripts/*.sh` 構成を維持する結論とした。
 - **後続フェーズへの反映**:
-  - 残る未解決 Issue は Phase 5 の **#14**（Keyring ヘッドレス検証）および **#29**（justfile 移行検討）。
+  - 残る未解決 Issue は Phase 5 の **#14**（Keyring ヘッドレス検証）。
 
 ---
 
@@ -128,7 +128,7 @@ flowchart TD
     subgraph Phase5["Phase 5: ドキュメント再編 & 実験的機能"]
         I23["#23 README 分割・重複削減 ✅"]
         I14["#14 Keyring ヘッドレス検証"]
-        I29["#29 justfile 移行検討"]
+        I29["#29 justfile 移行検討 ✅"]
     end
 
     Phase1 --> Phase2
@@ -147,8 +147,8 @@ flowchart TD
 
     classDef done fill:#d4edda,stroke:#28a745,color:#155724
     classDef next fill:#fff3cd,stroke:#ffc107,color:#856404
-    class I15,I7,I8,I6,I16,I22,I10,I9,I18,I13,I24,I25,I21,I17,I12,I20,I19,I11,I23 done
-    class I14,I29 next
+    class I15,I7,I8,I6,I16,I22,I10,I9,I18,I13,I24,I25,I21,I17,I12,I20,I19,I11,I23,I29 done
+    class I14 next
 ```
 
 ### Phase 1: Quick Wins & エージェント摩擦解消（即効性） — ✅ 完了（2026-10-11）
@@ -190,4 +190,4 @@ flowchart TD
 - **対象**:
   - ✅ **#23 [Docs]**: README から `docs/` への分割（セキュリティ、認証、トラブルシューティング）、記載の重複排除、`scripts/lint.sh` での記載検査
   - **#14 [Agent DX]**: Antigravity CLI 向けの Secret Service（Keyring）ヘッドレス自動アンロックの技術検証
-  - **#29 [DX]**: #17 完了後、引数渡しやサブディレクトリ実行などの具体的な要望がある場合に、`.env` をスクリプト側で読む「薄い justfile」への移行を判断する
+  - ✅ **#29 [DX]**: #17 完了後の再評価により、`scripts/*.sh` 分離で主目的が達成済みであり新規依存や非互換を避けるため、現行の `Makefile` + `scripts/*.sh` 構成を維持する結論でクローズ
