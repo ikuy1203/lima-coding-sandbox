@@ -123,7 +123,8 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── versions.sh            # make versions（ホストと VM 内の主要ソフトウェアのバージョンを一覧表示）
 │   ├── register-key.sh        # make register-key（Git 署名鍵をホストの gh で GitHub に登録）
 │   ├── lint.sh                # テンプレート・スクリプト・ドキュメント整合性の検査（CI でも実行する）
-│   └── test.sh                # プロビジョニングスクリプトと Makefile / scripts の回帰テスト（CI でも実行する）
+│   ├── test.sh                # プロビジョニングスクリプトと Makefile / scripts の回帰テストランナー（CI でも実行する）
+│   └── tests/                 # test.sh から読み込むスイート別の回帰テスト定義
 └── .github/
     ├── dependabot.yml         # GitHub Actions のアクションの更新を週 1 回確認する
     └── workflows/ci.yml       # GitHub Actions（lint・回帰テスト・実 VM 起動テストを実行する）
@@ -597,7 +598,7 @@ VM 内で個別に更新する場合は、以下のコマンドを実行しま�
 
 ### 静的検査とローカル回帰テスト
 
-`scripts/lint.sh` で、テンプレートの検証（`limactl validate`）、スクリプト（`provision/*.sh`、`scripts/*.sh`）およびテンプレートに書いた probes の `shellcheck`、ならびにドキュメントと設定の整合性検査を実行します（shellcheck は `brew install shellcheck` でインストールする）。
+`scripts/lint.sh` で、テンプレートの検証（`limactl validate`）、スクリプト（`provision/*.sh`、`scripts/*.sh`、`scripts/tests/*.sh`）およびテンプレートに書いた probes の `shellcheck`、ならびにドキュメントと設定の整合性検査を実行します（shellcheck は `brew install shellcheck` でインストールする）。
 
 ```sh
 make lint    # または ./scripts/lint.sh
@@ -607,6 +608,8 @@ make lint    # または ./scripts/lint.sh
 
 ```sh
 make test    # または bash ./scripts/test.sh
+bash ./scripts/test.sh --list                  # スイート名の一覧を表示
+bash ./scripts/test.sh lib_functions probes    # 指定したスイートのみを実行
 ```
 
 ### CI（GitHub Actions）
