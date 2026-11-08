@@ -19,11 +19,7 @@ if [ "${1:-}" = "--check" ]; then
   exit 0
 fi
 
-st=$(get_status "${NAME}") || exit $?
-if [ "${st}" != Running ]; then
-  echo >&2 "エラー: インスタンス ${NAME} は動いていません（先に make start で起動してください）"
-  exit 1
-fi
+require_running "${NAME}" || exit $?
 
 pubkey=$(limactl shell "${NAME}" cat .ssh/id_ed25519_signing.pub </dev/null) || {
   echo >&2 "エラー: VM から公開鍵（~/.ssh/id_ed25519_signing.pub）を取得できませんでした"
@@ -42,8 +38,7 @@ if ! raw_fp=$(printf '%s\n' "${pubkey}" | ssh-keygen -lf - 2>/dev/null); then
   echo >&2 "エラー: VM の公開鍵（~/.ssh/id_ed25519_signing.pub）の形式が不正です"
   exit 1
 fi
-key_fp=$(printf '%s\n' "${raw_fp}" | LC_ALL=C awk 'NR==1 {print $2}' 2>/dev/null || true)
-if [[ ! "${key_fp}" =~ ^SHA256:[A-Za-z0-9+/=]+$ ]]; then
+if ! key_fp=$(extract_pubkey_fingerprint "${raw_fp}"); then
   echo >&2 "エラー: VM の公開鍵（~/.ssh/id_ed25519_signing.pub）の指紋を取得できませんでした"
   exit 1
 fi

@@ -17,15 +17,7 @@ source "${SCRIPT_DIR}/lib.sh"
 NAME=$(resolve_name) || exit $?
 BACKUP_DIR=$(resolve_auth_backup_dir "${NAME}") || exit $?
 
-st=$(get_status "${NAME}") || exit $?
-if [ -z "${st}" ]; then
-  echo >&2 "エラー: インスタンス ${NAME} はありません"
-  exit 1
-fi
-if [ "${st}" != Running ]; then
-  echo >&2 "エラー: インスタンス ${NAME} は動いていません（先に make start で起動してください）"
-  exit 1
-fi
+require_running "${NAME}" || exit $?
 
 parent_dir="$(dirname "${BACKUP_DIR}")"
 if [ ! -d "${parent_dir}" ]; then
@@ -210,57 +202,7 @@ fi
 find "${stage_dir}" -type d -exec chmod 0700 {} +
 find "${stage_dir}" -type f -exec chmod 0600 {} +
 
-backed_up_items=()
-key_fingerprint=""
-
-# 1. 署名鍵の検証（非対話署名用のため、パスフレーズ保護や破損した秘密鍵はエラーにする）
-if [ -e "${stage_dir}/.ssh/id_ed25519_signing" ] || [ -e "${stage_dir}/.ssh/id_ed25519_signing.pub" ]; then
-  if [ ! -s "${stage_dir}/.ssh/id_ed25519_signing" ] || [ ! -s "${stage_dir}/.ssh/id_ed25519_signing.pub" ]; then
-    echo >&2 "エラー: 退避した署名鍵（秘密鍵または公開鍵）が空または欠落しています"
-    exit 1
-  fi
-  if ! key_fingerprint=$(ssh-keygen -lf "${stage_dir}/.ssh/id_ed25519_signing.pub" 2>/dev/null); then
-    echo >&2 "エラー: 退避した公開鍵 ~/.ssh/id_ed25519_signing.pub の形式が不正です"
-    exit 1
-  fi
-  if ! derived_pub=$(ssh-keygen -y -P '' -f "${stage_dir}/.ssh/id_ed25519_signing" 2>&1); then
-    echo >&2 "エラー: 退避した秘密鍵 ~/.ssh/id_ed25519_signing がパスフレーズで保護されているか破損しています"
-    exit 1
-  fi
-  actual_pub=$(awk '{print $1, $2}' "${stage_dir}/.ssh/id_ed25519_signing.pub")
-  derived_key=$(printf '%s\n' "${derived_pub}" | awk '{print $1, $2}')
-  if [ -z "${derived_key}" ] || [ "${derived_key}" != "${actual_pub}" ]; then
-    echo >&2 "エラー: 退避した署名鍵の秘密鍵と公開鍵が一致しません"
-    exit 1
-  fi
-  # shellcheck disable=SC2088
-  backed_up_items+=("~/.ssh/id_ed25519_signing, ~/.ssh/id_ed25519_signing.pub (${key_fingerprint})")
-fi
-
-# 2. GitHub CLI 設定の検証
-if [ -d "${stage_dir}/.config/gh" ]; then
-  if [ -z "$(find "${stage_dir}/.config/gh" -type f -size +0c -print -quit)" ]; then
-    echo >&2 "エラー: 退避した ~/.config/gh に有効なファイルがありません"
-    exit 1
-  fi
-  # shellcheck disable=SC2088
-  backed_up_items+=("~/.config/gh")
-fi
-
-# 3. GitHub Copilot CLI 設定の検証
-if [ -e "${stage_dir}/.copilot/config.json" ]; then
-  if [ ! -s "${stage_dir}/.copilot/config.json" ] || [ ! -r "${stage_dir}/.copilot/config.json" ]; then
-    echo >&2 "エラー: 退避した ~/.copilot/config.json が空または読み取り不可です"
-    exit 1
-  fi
-  # shellcheck disable=SC2088
-  backed_up_items+=("~/.copilot/config.json")
-fi
-
-if [ "${#backed_up_items[@]}" -eq 0 ]; then
-  echo >&2 "エラー: 退避された有効なファイルがありません"
-  exit 1
-fi
+validate_auth_backup_items "${stage_dir}" "退避したデータ" || exit $?
 
 # 復元用のアーカイブ生成・一覧読み出しができることまで確認する
 if ! tar -C "${stage_dir}" -cf - . | tar -tf - >/dev/null 2>&1; then
@@ -290,7 +232,7 @@ chmod 0700 "${BACKUP_DIR}"
 
 echo "インスタンス ${NAME} の認証情報・署名鍵を退避しました:"
 echo "  退避先: ${BACKUP_DIR} (ディレクトリ 0700 / ファイル 0600)"
-for item in "${backed_up_items[@]}"; do
+for item in "${AUTH_VALIDATED_LABELS[@]}"; do
   echo "  - ${item}"
 done
 echo "注意: 退避先には秘密鍵や平文トークンが含まれます。共有領域へ移動せず、不要になったら削除してください。"

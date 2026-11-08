@@ -26,100 +26,16 @@ if [ ! -O "${BACKUP_DIR}" ]; then
   exit 1
 fi
 
-for sub in .ssh .config .config/gh .copilot; do
-  if [ -L "${BACKUP_DIR}/${sub}" ]; then
-    echo >&2 "エラー: 退避先の ${BACKUP_DIR}/${sub} がシンボリックリンクのため復元できません"
-    exit 1
-  fi
-done
-
-items=()
-restored_labels=()
-
-# 1. 署名鍵の事前検証（非対話署名用のため、パスフレーズ保護や破損した秘密鍵はエラーにする）
-if [ -e "${BACKUP_DIR}/.ssh/id_ed25519_signing" ] || [ -L "${BACKUP_DIR}/.ssh/id_ed25519_signing" ] || \
-   [ -e "${BACKUP_DIR}/.ssh/id_ed25519_signing.pub" ] || [ -L "${BACKUP_DIR}/.ssh/id_ed25519_signing.pub" ]; then
-  if [ -L "${BACKUP_DIR}/.ssh/id_ed25519_signing" ] || [ -L "${BACKUP_DIR}/.ssh/id_ed25519_signing.pub" ]; then
-    echo >&2 "エラー: 退避先の署名鍵にシンボリックリンクが含まれているため復元できません: ${BACKUP_DIR}/.ssh"
-    exit 1
-  fi
-  if [ ! -f "${BACKUP_DIR}/.ssh/id_ed25519_signing" ] || [ ! -s "${BACKUP_DIR}/.ssh/id_ed25519_signing" ] || \
-     [ ! -r "${BACKUP_DIR}/.ssh/id_ed25519_signing" ]; then
-    echo >&2 "エラー: 退避先の秘密鍵 ${BACKUP_DIR}/.ssh/id_ed25519_signing が欠落しているか読み取れません"
-    exit 1
-  fi
-  if [ ! -f "${BACKUP_DIR}/.ssh/id_ed25519_signing.pub" ] || [ ! -s "${BACKUP_DIR}/.ssh/id_ed25519_signing.pub" ] || \
-     [ ! -r "${BACKUP_DIR}/.ssh/id_ed25519_signing.pub" ]; then
-    echo >&2 "エラー: 退避先の公開鍵 ${BACKUP_DIR}/.ssh/id_ed25519_signing.pub が欠落しているか読み取れません"
-    exit 1
-  fi
-  if ! key_fp=$(ssh-keygen -lf "${BACKUP_DIR}/.ssh/id_ed25519_signing.pub" 2>/dev/null); then
-    echo >&2 "エラー: 退避先の公開鍵 ${BACKUP_DIR}/.ssh/id_ed25519_signing.pub の形式が不正です"
-    exit 1
-  fi
-  if ! derived_pub=$(ssh-keygen -y -P '' -f "${BACKUP_DIR}/.ssh/id_ed25519_signing" 2>&1); then
-    echo >&2 "エラー: 退避先の秘密鍵 ${BACKUP_DIR}/.ssh/id_ed25519_signing がパスフレーズで保護されているか破損しています"
-    exit 1
-  fi
-  actual_pub=$(awk '{print $1, $2}' "${BACKUP_DIR}/.ssh/id_ed25519_signing.pub")
-  derived_key=$(printf '%s\n' "${derived_pub}" | awk '{print $1, $2}')
-  if [ -z "${derived_key}" ] || [ "${derived_key}" != "${actual_pub}" ]; then
-    echo >&2 "エラー: 退避先の秘密鍵と公開鍵が一致しません"
-    exit 1
-  fi
-  items+=(.ssh/id_ed25519_signing .ssh/id_ed25519_signing.pub)
-  # shellcheck disable=SC2088
-  restored_labels+=("~/.ssh/id_ed25519_signing, ~/.ssh/id_ed25519_signing.pub (${key_fp})")
-fi
-
-# 2. GitHub CLI 設定の事前検証
-if [ -d "${BACKUP_DIR}/.config/gh" ]; then
-  if [ -n "$(find "${BACKUP_DIR}/.config/gh" \( ! -type f ! -type d \) -print -quit)" ]; then
-    echo >&2 "エラー: 退避先の ${BACKUP_DIR}/.config/gh にシンボリックリンクまたは特殊ファイルが含まれているため復元できません"
-    exit 1
-  fi
-  if [ -z "$(find "${BACKUP_DIR}/.config/gh" -type f -size +0c -print -quit)" ]; then
-    echo >&2 "エラー: 退避先の ${BACKUP_DIR}/.config/gh に有効なファイルがありません"
-    exit 1
-  fi
-  items+=(.config/gh)
-  # shellcheck disable=SC2088
-  restored_labels+=("~/.config/gh")
-fi
-
-# 3. GitHub Copilot CLI 設定の事前検証
-if [ -e "${BACKUP_DIR}/.copilot/config.json" ] || [ -L "${BACKUP_DIR}/.copilot/config.json" ]; then
-  if [ -L "${BACKUP_DIR}/.copilot/config.json" ]; then
-    echo >&2 "エラー: 退避先の ${BACKUP_DIR}/.copilot/config.json がシンボリックリンクのため復元できません"
-    exit 1
-  fi
-  if [ ! -f "${BACKUP_DIR}/.copilot/config.json" ] || [ ! -s "${BACKUP_DIR}/.copilot/config.json" ] || \
-     [ ! -r "${BACKUP_DIR}/.copilot/config.json" ]; then
-    echo >&2 "エラー: 退避先の ${BACKUP_DIR}/.copilot/config.json が空または読み取り不可です"
-    exit 1
-  fi
-  items+=(.copilot/config.json)
-  # shellcheck disable=SC2088
-  restored_labels+=("~/.copilot/config.json")
-fi
-
-if [ "${#items[@]}" -eq 0 ]; then
-  echo >&2 "エラー: 退避先に復元できる認証情報や署名鍵が見つかりません: ${BACKUP_DIR}"
-  exit 1
-fi
+validate_auth_backup_items "${BACKUP_DIR}" "退避先" || exit $?
 
 if [ "${1:-}" = "--check" ]; then
   exit 0
 fi
 
-st=$(get_status "${NAME}") || exit $?
-if [ "${st}" != Running ]; then
-  echo >&2 "エラー: インスタンス ${NAME} は動いていません（先に make start で起動してください）"
-  exit 1
-fi
+require_running "${NAME}" || exit $?
 
 # shellcheck disable=SC2016
-tar -C "${BACKUP_DIR}" -cf - "${items[@]}" | limactl shell "${NAME}" bash -c '
+tar -C "${BACKUP_DIR}" -cf - "${AUTH_VALIDATED_ITEMS[@]}" | limactl shell "${NAME}" bash -c '
   set -eu -o pipefail
   umask 077
 
@@ -286,7 +202,7 @@ tar -C "${BACKUP_DIR}" -cf - "${items[@]}" | limactl shell "${NAME}" bash -c '
 
 echo "インスタンス ${NAME} に認証情報・署名鍵を復元しました:"
 echo "  復元元: ${BACKUP_DIR}"
-for label in "${restored_labels[@]}"; do
+for label in "${AUTH_VALIDATED_LABELS[@]}"; do
   echo "  - ${label}"
 done
 echo "注意: トークンの有効期限切れや失効により認証エラーになる場合は、VM 内で再度ログイン（gh auth login / copilot の /login）してください。"

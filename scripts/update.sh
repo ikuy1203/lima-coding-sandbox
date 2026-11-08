@@ -13,15 +13,7 @@ source "${SCRIPT_DIR}/lib.sh"
 
 NAME=$(resolve_name) || exit $?
 
-st=$(get_status "${NAME}") || exit $?
-if [ -z "${st}" ]; then
-  echo >&2 "エラー: インスタンス ${NAME} はありません"
-  exit 1
-fi
-if [ "${st}" != Running ]; then
-  echo >&2 "エラー: インスタンス ${NAME} は動いていません（先に make start で起動してください）"
-  exit 1
-fi
+require_running "${NAME}" || exit $?
 
 # shellcheck disable=SC2016
 limactl shell "${NAME}" bash -c '
