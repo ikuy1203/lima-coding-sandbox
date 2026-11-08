@@ -2,7 +2,7 @@
 
 本ドキュメントは、`lima-coding-sandbox` の Issue（計 21 件、#6〜#25・#29）について、プロジェクトの目的・セキュリティ・開発効率の観点から評価基準を定め、実装の優先順位とロードマップを整理したものです。
 
-> **最終更新: 2026-11-08** — 完了 20 件 / 未解決 1 件。Phase 1〜Phase 4 に続き、**Phase 5 の #23, #29** が完了しました（残りは #14）。
+> **最終更新: 2026-11-08** — 完了 21 件 / 未解決 0 件。Phase 1〜Phase 5 の**全 21 件が完了**しました。
 
 ---
 
@@ -16,7 +16,7 @@
 | Phase 2: セキュリティ隔離 & 起動高速化 | #10, #9, #18 | 3 / 3 | ✅ 完了 |
 | Phase 3: プロビジョニング堅牢化 & CI 自動テスト | #13, #24, #25, #21 | 4 / 4 | ✅ 完了 |
 | Phase 4: 運用 DX & コードベース保守 | #17, #12, #20, #19, #11 | 5 / 5 | ✅ 完了 |
-| Phase 5: ドキュメント再編 & 実験的機能 | #23, #14, #29 | 2 / 3 | 進行中 |
+| Phase 5: ドキュメント再編 & 実験的機能 | #23, #14, #29 | 3 / 3 | ✅ 完了 |
 
 ### 完了済み Issue
 
@@ -42,14 +42,14 @@
 | [#11](https://github.com/ikuy1203/lima-coding-sandbox/issues/11) | [DX] VS Code / Cursor Remote - SSH 連携のサポート（make ssh-config の追加） | [#50](https://github.com/ikuy1203/lima-coding-sandbox/pull/50) | 2026-11-07 | `make ssh-config`（`scripts/ssh-config.sh`）を追加し、起動中 VM の SSH 接続設定（`~/.ssh/config` 用の `Include` 案内・設定状態および `ssh.config` の内容）を出力。`scripts/herdr-remote.sh` を含む `ssh -G` 判定の大文字 `NAME` 対応を実施。`README.md` に VS Code / Cursor の Remote - SSH 接続手順とセキュリティ上の注意点（自動ポート転送・GitHub 認証引き継ぎ・SSH エージェント転送）を追記 |
 | [#23](https://github.com/ikuy1203/lima-coding-sandbox/issues/23) | [Docs] ツール一覧などの重複記載の削減と README の分割 | [#51](https://github.com/ikuy1203/lima-coding-sandbox/pull/51) | 2026-11-07 | `coding-sandbox.yaml` の先頭コメント・`message:` および `README.md` 内の重複一覧を削減。`README.md` から認証（`docs/authentication.md`）・セキュリティ（`docs/security.md`）・トラブルシューティング（`docs/troubleshooting.md`）を分割。`scripts/lint.sh` にファイル構成・Makefile ターゲット・パッケージ/probe コマンド・Markdown リンクの整合性検査を追加し、`scripts/test.sh` に回帰テストを追加 |
 | [#29](https://github.com/ikuy1203/lima-coding-sandbox/issues/29) | [DX] Makefile を justfile に移行するか検討する（#17 の後） | [#52](https://github.com/ikuy1203/lima-coding-sandbox/pull/52) | 2026-11-08 | #17（`scripts/*.sh` への分離）および #11, #12, #19, #20, #23 完了後の再評価を実施。可読性・`shellcheck`・回帰テストの課題は現行の薄い `Makefile` + `scripts/*.sh` 構成で完全に解決しており、位置引数の要件やサブディレクトリ実行の需要もない一方、`just` 移行には新規依存（`brew install just`）の追加・変数指定順の非互換・`.env` 読み込み再実装等のコストが伴うため、移行せず現行構成を維持する結論でクローズ |
+| [#14](https://github.com/ikuy1203/lima-coding-sandbox/issues/14) | [Agent DX] Antigravity CLI 向けの Secret Service（Keyring）ヘッドレス対応の検証 | - | 2026-11-08 | 既存構成（Keyring 未導入）のまま `make shell` で `agy` にブラウザ OAuth ログインし、CLI 終了・`make stop`（VM 停止）・再度の `make shell`（VM 再起動）の後もログイン状態が維持されることを実機で確認。複数接続経路での D-Bus セッション問題や `SSH_AUTH_SOCK` への副作用を伴い、かつ同一 UID / `sudo` 可のエージェントに対する保護にもならないダミーパスワード Keyring の導入は不要と判断し、`docs/authentication.md` の記述を更新してクローズ |
 
 ### 前回からの変更点
 
-- **#29（Makefile を justfile に移行するか検討する）の検討を完了し、現行構成を維持する判断でクローズ**:
-  - #17（PR #46）によりすべてのシェル処理が `scripts/*.sh` に分離され、`Makefile` は 1 行呼び出しの薄いラッパーとなったことで、可読性・`shellcheck` 検査・単体/回帰テストの課題は外部依存を追加することなく解決済みであることを確認。
-  - 後続の #12・#20・#19・#11 も位置引数を必要とせず実装完了しており、`scripts/delete.sh` の動的な署名鍵指紋取得も `just` の静的な `[confirm]` では代替できない一方、「薄い `justfile`」への移行でも必須依存の増加・`just KEY=VALUE <target>` の指定順非互換・`.env` 読み込みの再実装・約 300 箇所の表記修正が生じるため、現行の `Makefile` + `scripts/*.sh` 構成を維持する結論とした。
-- **後続フェーズへの反映**:
-  - 残る未解決 Issue は Phase 5 の **#14**（Keyring ヘッドレス検証）。
+- **#14（Antigravity CLI 向けの Secret Service / Keyring ヘッドレス対応の検証）の検証を完了し、Keyring 追加導入なし（対応不要）の判断でクローズ**:
+  - 既存の VM 構成（Keyring 未導入）のまま `make shell` で `agy` にブラウザ OAuth ログインし、CLI の終了・`make stop` による VM 停止・再度の `make shell`（VM 再起動）を経ても再ログイン不要でログイン状態が維持されることを実機で確認。
+  - これにより、`gnome-keyring` や `dbus-x11` をダミーパスワード自動アンロックで導入する必要がないことを確認（不要なパッケージ追加、複数接続経路での D-Bus セッション不整合、`SSH_AUTH_SOCK` への副作用、および同一 UID / `sudo` 可能なエージェントに対する見せかけの保護を回避）。
+  - `docs/authentication.md` の「ログイン情報が保存されるかどうかは未確認」という記述を実機確認結果に合わせて更新し、全 21 件の Issue 対応を完了。
 
 ---
 
@@ -125,9 +125,9 @@ flowchart TD
         I11["#11 Remote-SSH 連携支援 ✅"]
     end
 
-    subgraph Phase5["Phase 5: ドキュメント再編 & 実験的機能"]
+    subgraph Phase5["Phase 5: ドキュメント再編 & 実験的機能 (完了)"]
         I23["#23 README 分割・重複削減 ✅"]
-        I14["#14 Keyring ヘッドレス検証"]
+        I14["#14 Keyring ヘッドレス検証 ✅"]
         I29["#29 justfile 移行検討 ✅"]
     end
 
@@ -146,9 +146,7 @@ flowchart TD
     I17 --> I29
 
     classDef done fill:#d4edda,stroke:#28a745,color:#155724
-    classDef next fill:#fff3cd,stroke:#ffc107,color:#856404
-    class I15,I7,I8,I6,I16,I22,I10,I9,I18,I13,I24,I25,I21,I17,I12,I20,I19,I11,I23,I29 done
-    class I14 next
+    class I15,I7,I8,I6,I16,I22,I10,I9,I18,I13,I24,I25,I21,I17,I12,I20,I19,I11,I23,I14,I29 done
 ```
 
 ### Phase 1: Quick Wins & エージェント摩擦解消（即効性） — ✅ 完了（2026-10-11）
@@ -185,9 +183,9 @@ flowchart TD
   - ✅ **#19 [DX]**: `make update`, `make versions` の追加
   - ✅ **#11 [DX]**: `make ssh-config` の追加と Remote-SSH ドキュメントの拡充
 
-### Phase 5: ドキュメント再編 & 実験的機能（仕上げ）
+### Phase 5: ドキュメント再編 & 実験的機能（仕上げ） — ✅ 完了（2026-11-08）
 - **目的**: 変更が一段落した段階でドキュメントを整理し、難易度の高い実験的検証を行う。
 - **対象**:
   - ✅ **#23 [Docs]**: README から `docs/` への分割（セキュリティ、認証、トラブルシューティング）、記載の重複排除、`scripts/lint.sh` での記載検査
-  - **#14 [Agent DX]**: Antigravity CLI 向けの Secret Service（Keyring）ヘッドレス自動アンロックの技術検証
+  - ✅ **#14 [Agent DX]**: 実機検証により既存構成（Keyring 未導入）のままでもブラウザ OAuth ログインが CLI 終了・VM 停止/再起動後に維持されることを確認したため、ヘッドレス Keyring の追加導入は不要と判断し、`docs/authentication.md` を更新してクローズ
   - ✅ **#29 [DX]**: #17 完了後の再評価により、`scripts/*.sh` 分離で主目的が達成済みであり新規依存や非互換を避けるため、現行の `Makefile` + `scripts/*.sh` 構成を維持する結論でクローズ
