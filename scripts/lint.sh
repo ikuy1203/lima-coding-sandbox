@@ -18,7 +18,7 @@ readme=README.md
 # provision の file: の読み込みと minimumLimaVersion の確認も行われる
 limactl validate "${template}"
 
-shellcheck provision/*.sh scripts/*.sh
+shellcheck provision/*.sh scripts/*.sh scripts/tests/*.sh
 
 # probes はテンプレートに直接書いてあるため、limactl template yq で取り出して検査する
 count=$(limactl template yq "${template}" '.probes | length')
@@ -173,13 +173,130 @@ check_set_equal \
   "${disk_provisions}" \
   "${readme_tree_provisions}"
 
-# 2. scripts/*.sh と docs/*.md の整合性（ディスク上のファイル vs README.md の「ファイル構成」）
+# 2. scripts/*.sh、scripts/tests/*.sh、docs/*.md の整合性
 disk_scripts=$(printf '%s\n' scripts/*.sh | sort -u)
 readme_tree_scripts=$(extract_tree_dir_files "${tree_section}" "scripts")
 check_set_equal \
   "scripts in ${readme} '## ファイル構成' do not match scripts/*.sh" \
   "${disk_scripts}" \
   "${readme_tree_scripts}"
+
+disk_test_suites=$(printf '%s\n' scripts/tests/*.sh | sort -u)
+sourced_test_suites=$(
+  awk '!/^[ \t]*#/ && match($0, /scripts\/tests\/[A-Za-z0-9_.-]+\.sh/) { print substr($0, RSTART, RLENGTH) }' scripts/test.sh | sort -u
+)
+check_set_equal \
+  "test suite files sourced in scripts/test.sh do not match scripts/tests/*.sh" \
+  "${disk_test_suites}" \
+  "${sourced_test_suites}"
+
+defined_test_suites=$(
+  awk -F '(' '/^test_[a-z0-9_]+\(\)/ { sub(/^test_/, "", $1); print $1 }' scripts/tests/*.sh | sort -u
+)
+selectable_suites_in_runner=$(
+  awk '
+    /^SELECTABLE_SUITES=\(/ { in_arr = 1; next }
+    in_arr && /^\)/ { exit }
+    in_arr {
+      gsub(/#.*$/, "")
+      gsub(/^[ \t]+|[ \t]+$/, "")
+      if ($0 == "makefile_logic") {
+        has_ml = 1
+      } else if ($0 != "") {
+        suites[$0] = 1
+      }
+    }
+    END {
+      if (has_ml) {
+        for (s in suites) print s
+      }
+    }
+  ' scripts/test.sh | sort -u
+)
+check_set_equal \
+  "SELECTABLE_SUITES in scripts/test.sh does not match test_*() functions in scripts/tests/*.sh" \
+  "${defined_test_suites}" \
+  "${selectable_suites_in_runner}"
+
+run_suite_cases=$(
+  awk '
+    /^run_suite\(\)/ { in_fn = 1; next }
+    in_fn && /^\}/ { exit }
+    in_fn {
+      gsub(/#.*$/, "")
+      if (match($0, /^[ \t]*[a-z0-9_]+\)[ \t]*test_[a-z0-9_]+/)) {
+        line = substr($0, RSTART, RLENGTH)
+        sub(/^[ \t]*/, "", line)
+        split(line, parts, /\)[ \t]*test_/)
+        if (parts[1] != "" && parts[1] == parts[2]) {
+          if (parts[1] == "makefile_logic") {
+            has_ml_case = 1
+          } else {
+            suites[parts[1]] = 1
+          }
+        }
+      }
+    }
+    END {
+      if (has_ml_case) {
+        for (s in suites) print s
+      }
+    }
+  ' scripts/test.sh | sort -u
+)
+check_set_equal \
+  "run_suite() cases in scripts/test.sh do not match test_*() functions in scripts/tests/*.sh" \
+  "${defined_test_suites}" \
+  "${run_suite_cases}"
+
+default_executed_suites=$(
+  awk '
+    /^ALL_SUITES=\(/ { in_all = 1; next }
+    in_all && /^\)/ { in_all = 0; next }
+    in_all {
+      gsub(/#.*$/, "")
+      gsub(/^[ \t]+|[ \t]+$/, "")
+      if ($0 == "makefile_logic") {
+        has_ml_in_all = 1
+      } else if ($0 != "") {
+        all_suites[$0] = 1
+      }
+      next
+    }
+    /^MAKEFILE_LOGIC_SUITES=\(/ { in_ml_arr = 1; next }
+    in_ml_arr && /^\)/ { in_ml_arr = 0; next }
+    in_ml_arr {
+      gsub(/#.*$/, "")
+      gsub(/^[ \t]+|[ \t]+$/, "")
+      if ($0 != "") ml_suites[$0] = 1
+      next
+    }
+    /^test_makefile_logic\(\)/ { in_ml_fn = 1; next }
+    in_ml_fn && /^\}/ { in_ml_fn = 0; next }
+    in_ml_fn {
+      gsub(/#.*$/, "")
+      if ($0 ~ /MAKEFILE_LOGIC_SUITES\[@\]/) ml_fn_uses_arr = 1
+      next
+    }
+    /^append_suite_once\(\)/ { in_append = 1; next }
+    in_append && /^\}/ { in_append = 0; next }
+    in_append {
+      gsub(/#.*$/, "")
+      if ($0 ~ /MAKEFILE_LOGIC_SUITES\[@\]/) append_uses_arr = 1
+      next
+    }
+    END {
+      for (s in all_suites) print s
+      if (has_ml_in_all && ml_fn_uses_arr && append_uses_arr) {
+        for (s in ml_suites) print s
+      }
+    }
+  ' scripts/test.sh | sort -u
+)
+check_set_equal \
+  "default suites (ALL_SUITES + MAKEFILE_LOGIC_SUITES) in scripts/test.sh do not match test_*() functions in scripts/tests/*.sh" \
+  "${defined_test_suites}" \
+  "${default_executed_suites}"
 
 disk_docs=$(printf '%s\n' docs/*.md | sort -u)
 readme_tree_docs=$(extract_tree_dir_files "${tree_section}" "docs")
