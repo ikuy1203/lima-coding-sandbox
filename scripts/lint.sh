@@ -545,6 +545,215 @@ if [ -f "docs/security.md" ]; then
   fi
 fi
 
+# 6. provision/*.sh および coding-sandbox.yaml 間の重複関数の整合性検査
+extract_sh_function_body() {
+  local func_name="$1"
+  local file="${2:-}"
+  # set -o pipefail 下での SIGPIPE を防ぎ、また同一ファイル内の重複定義も検出するため入力を最後まで消費する
+  awk -v fn="${func_name}" '
+    $0 == fn "() {" {
+      start_count++
+      if (start_count == 1) {
+        in_fn = 1
+        print "{"
+      }
+      next
+    }
+    in_fn {
+      print
+      if ($0 == "}") {
+        in_fn = 0
+        found_end = 1
+      }
+    }
+    END {
+      if (start_count != 1 || !found_end || in_fn) {
+        exit 1
+      }
+    }
+  ' ${file:+"${file}"}
+}
+
+extract_probe_script() {
+  local template_file="$1"
+  local desc_prefix="$2"
+  awk -v prefix="- description: ${desc_prefix}" '
+    index($0, prefix) == 1 { in_probe = 1; next }
+    in_probe && (/^- description:/ || /^[a-zA-Z]/) { exit }
+    in_probe && /^  hint:/ { exit }
+    in_probe && /^  script:/ { in_script = 1; next }
+    in_script && /^ ? ? ?$/ { print ""; next }
+    in_script && /^    / {
+      sub(/^    /, "")
+      print
+    }
+  ' "${template_file}"
+}
+
+find_probe_index() {
+  local template_file="$1"
+  local desc_prefix="$2"
+  awk -v prefix="- description: ${desc_prefix}" '
+    /^probes:/ { in_p = 1; idx = 0; next }
+    in_p && /^[a-zA-Z]/ { in_p = 0 }
+    in_p && /^[[:space:]]*-[[:space:]]*description:/ {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      if (index(line, prefix) == 1) {
+        print idx
+        found = 1
+        exit
+      }
+      idx++
+    }
+    END { if (!found) exit 1 }
+  ' "${template_file}"
+}
+
+compare_function_bodies() {
+  local ref_label="$1"
+  local ref_body="$2"
+  local target_label="$3"
+  local target_body="$4"
+  local err_msg="$5"
+
+  if [ "${target_body}" != "${ref_body}" ]; then
+    lint_err "${err_msg}"
+    local ref_tmp="${LIMA_HOME}/ref_fn.tmp"
+    local cur_tmp="${LIMA_HOME}/cur_fn.tmp"
+    printf '%s\n' "${ref_body}" > "${ref_tmp}"
+    printf '%s\n' "${target_body}" > "${cur_tmp}"
+    diff -u --label "${ref_label}" --label "${target_label}" "${ref_tmp}" "${cur_tmp}" >&2 || true
+  fi
+}
+
+check_shared_provision_functions() {
+  local fn="$1"
+  local check_file_set="$2"
+  shift 2
+  local files=("$@")
+  local expected_files_set actual_files_set ref_file ref_body cur_body f
+
+  if [ "${check_file_set}" = "true" ]; then
+    expected_files_set=$(printf '%s\n' "${files[@]}" | sort -u)
+    actual_files_set=$(
+      awk -v fn="${fn}" '$0 == fn "() {" { print FILENAME }' provision/*.sh | sort -u
+    )
+    check_set_equal \
+      "files defining ${fn}() in provision/*.sh do not match expected set" \
+      "${expected_files_set}" \
+      "${actual_files_set}"
+  fi
+
+  ref_file="${files[0]}"
+  if ! ref_body=$(extract_sh_function_body "${fn}" "${ref_file}"); then
+    lint_err "could not extract function '${fn}()' from ${ref_file}"
+    return
+  fi
+
+  for f in "${files[@]:1}"; do
+    if ! cur_body=$(extract_sh_function_body "${fn}" "${f}"); then
+      lint_err "could not extract function '${fn}()' from ${f}"
+    else
+      compare_function_bodies \
+        "${ref_file}:${fn}()" "${ref_body}" \
+        "${f}:${fn}()" "${cur_body}" \
+        "function '${fn}()' in ${f} does not match '${fn}()' in ${ref_file}"
+    fi
+  done
+}
+
+download_helper_files=(
+  provision/github-cli.sh
+  provision/docker-engine.sh
+  provision/herdr.sh
+  provision/antigravity-cli.sh
+  provision/copilot-cli.sh
+  provision/mise.sh
+)
+check_shared_provision_functions "cleanup" "false" "${download_helper_files[@]}"
+for fn in is_transient_curl_rc is_transient_http_code download_file; do
+  check_shared_provision_functions "${fn}" "true" "${download_helper_files[@]}"
+done
+
+verify_cli_files=(
+  provision/herdr.sh
+  provision/antigravity-cli.sh
+  provision/copilot-cli.sh
+  provision/mise.sh
+)
+check_shared_provision_functions "verify_cli" "true" "${verify_cli_files[@]}"
+
+if ! gh_repo_ref_body=$(extract_sh_function_body "is_repo_configured" "provision/github-cli.sh"); then
+  lint_err "could not extract function 'is_repo_configured()' from provision/github-cli.sh"
+else
+  if ! gh_repo_apt_body=$(extract_sh_function_body "is_official_gh_repo_configured" "provision/apt-packages.sh"); then
+    lint_err "could not extract function 'is_official_gh_repo_configured()' from provision/apt-packages.sh"
+  else
+    compare_function_bodies \
+      "provision/github-cli.sh:is_repo_configured()" "${gh_repo_ref_body}" \
+      "provision/apt-packages.sh:is_official_gh_repo_configured()" "${gh_repo_apt_body}" \
+      "function 'is_official_gh_repo_configured()' in provision/apt-packages.sh does not match 'is_repo_configured()' in provision/github-cli.sh"
+  fi
+
+  basic_probe_idx=$(find_probe_index "${template}" "basic tools" || printf '?')
+  basic_probe_script=$(extract_probe_script "${template}" "basic tools")
+  if [ -z "${basic_probe_script}" ] || ! gh_repo_probe_body=$(extract_sh_function_body "check_gh_repo" <<< "${basic_probe_script}"); then
+    lint_err "could not extract function 'check_gh_repo()' from basic tools probe in ${template}"
+  else
+    compare_function_bodies \
+      "provision/github-cli.sh:is_repo_configured()" "${gh_repo_ref_body}" \
+      "${template} (probes[${basic_probe_idx}]):check_gh_repo()" "${gh_repo_probe_body}" \
+      "function 'check_gh_repo()' in ${template} (probes[${basic_probe_idx}]) does not match 'is_repo_configured()' in provision/github-cli.sh"
+  fi
+fi
+
+# GITHUB_CLI_KEYRING / GITHUB_CLI_REPO_LIST の既定値リテラルの整合性検査
+extract_env_default_literals() {
+  local var_name="$1"
+  awk -v v="${var_name}" '
+    !/^[ \t]*#/ {
+      in_sq = 0; in_dq = 0; line = ""
+      for (i = 1; i <= length($0); i++) {
+        c = substr($0, i, 1)
+        prev = (i > 1) ? substr($0, i - 1, 1) : ""
+        if (c == "\047" && !in_dq) {
+          in_sq = !in_sq
+        } else if (c == "\"" && !in_sq && prev != "\\") {
+          in_dq = !in_dq
+        } else if (c == "#" && !in_sq && !in_dq && (i == 1 || prev ~ /[ \t]/)) {
+          break
+        }
+        line = line c
+      }
+      pat = "\\$\\{" v "([^A-Za-z0-9_][^}]*)?\\}"
+      while (match(line, pat)) {
+        expr = substr(line, RSTART, RLENGTH)
+        prefix = "${" v ":-"
+        if (index(expr, prefix) == 1) {
+          val = substr(expr, length(prefix) + 1, length(expr) - length(prefix) - 1)
+          print (val == "" ? "<empty>" : val)
+        } else {
+          print "<invalid:" expr ">"
+        }
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' provision/*.sh "${template}" | sort -u
+}
+
+gh_keyring_defaults=$(extract_env_default_literals "GITHUB_CLI_KEYRING")
+check_set_equal \
+  "GITHUB_CLI_KEYRING default path across provision/*.sh and ${template} is inconsistent" \
+  "/etc/apt/keyrings/githubcli-archive-keyring.gpg" \
+  "${gh_keyring_defaults}"
+
+gh_repo_list_defaults=$(extract_env_default_literals "GITHUB_CLI_REPO_LIST")
+check_set_equal \
+  "GITHUB_CLI_REPO_LIST default path across provision/*.sh and ${template} is inconsistent" \
+  "/etc/apt/sources.list.d/github-cli.list" \
+  "${gh_repo_list_defaults}"
+
 if [ "${lint_errors}" -gt 0 ]; then
   echo "lint failed with ${lint_errors} error(s)." >&2
   exit 1
