@@ -598,7 +598,7 @@ VM 内で個別に更新する場合は、以下のコマンドを実行しま�
 
 ### 静的検査とローカル回帰テスト
 
-`scripts/lint.sh` で、テンプレートの検証（`limactl validate`）、スクリプト（`provision/*.sh`、`scripts/*.sh`、`scripts/tests/*.sh`）およびテンプレートに書いた probes の `shellcheck`、ならびにドキュメントと設定の整合性検査を実行します（shellcheck は `brew install shellcheck` でインストールする）。
+`scripts/lint.sh` で、テンプレートの検証（`limactl validate`）、スクリプト（`provision/*.sh`、`scripts/*.sh`、`scripts/tests/*.sh`）およびテンプレートに書いた probes の `shellcheck`、ならびにドキュメント・設定・重複関数の整合性検査を実行します（shellcheck は `brew install shellcheck` でインストールする）。
 
 ```sh
 make lint    # または ./scripts/lint.sh

@@ -245,4 +245,141 @@ EOF
   else
     log_fail "${suite}: failed markdown link/probe count checks (file=${file_link_failed}, anchor=${anchor_link_failed}, inline_dup_rc=${inline_dup_rc}, fence=${fence_anchor_failed}, yq=${yq_cnt_failed}, probe_cnt=${probe_cnt_failed})"
   fi
+
+  # 8.6 provision/*.sh および coding-sandbox.yaml 間の重複関数のドリフト（不整合）を個別に検出すること
+  log_test "${suite}: detects drift in duplicated functions across provision/*.sh and coding-sandbox.yaml"
+  local repo_drift="${test_dir}/repo_drift"
+
+  # 8.6a is_transient_curl_rc の不一致（provision/docker-engine.sh）
+  setup_repo_copy "${repo_drift}"
+  awk '{ gsub(/6\|7\|16\|18\|28\|35\|52\|55\|56\|92/, "6|7|28"); print }' "${repo_drift}/provision/docker-engine.sh" > "${repo_drift}/provision/docker-engine.sh.tmp"
+  mv "${repo_drift}/provision/docker-engine.sh.tmp" "${repo_drift}/provision/docker-engine.sh"
+  local drift_curl_rc_err="${test_dir}/drift_curl_rc.stderr"
+  local drift_curl_rc_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_curl_rc_err}" || drift_curl_rc_failed=1
+
+  # 8.6b is_transient_http_code の不一致（provision/herdr.sh）
+  setup_repo_copy "${repo_drift}"
+  awk '{ gsub(/408\|429\|500\|502\|503\|504/, "500|502|503"); print }' "${repo_drift}/provision/herdr.sh" > "${repo_drift}/provision/herdr.sh.tmp"
+  mv "${repo_drift}/provision/herdr.sh.tmp" "${repo_drift}/provision/herdr.sh"
+  local drift_http_err="${test_dir}/drift_http.stderr"
+  local drift_http_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_http_err}" || drift_http_failed=1
+
+  # 8.6c download_file の不一致（provision/mise.sh）
+  setup_repo_copy "${repo_drift}"
+  awk '{ gsub(/DOWNLOAD_MAX_TIME:-60/, "DOWNLOAD_MAX_TIME:-999"); print }' "${repo_drift}/provision/mise.sh" > "${repo_drift}/provision/mise.sh.tmp"
+  mv "${repo_drift}/provision/mise.sh.tmp" "${repo_drift}/provision/mise.sh"
+  local drift_dl_err="${test_dir}/drift_dl.stderr"
+  local drift_dl_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_dl_err}" || drift_dl_failed=1
+
+  # 8.6d verify_cli の不一致（provision/copilot-cli.sh）
+  setup_repo_copy "${repo_drift}"
+  awk '{ gsub(/CLI_VERIFY_TIMEOUT:-10/, "CLI_VERIFY_TIMEOUT:-99"); print }' "${repo_drift}/provision/copilot-cli.sh" > "${repo_drift}/provision/copilot-cli.sh.tmp"
+  mv "${repo_drift}/provision/copilot-cli.sh.tmp" "${repo_drift}/provision/copilot-cli.sh"
+  local drift_verify_err="${test_dir}/drift_verify.stderr"
+  local drift_verify_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_verify_err}" || drift_verify_failed=1
+
+  # 8.6e GitHub CLI リポジトリ検証ロジックの不一致（provision/apt-packages.sh）
+  setup_repo_copy "${repo_drift}"
+  awk '{ gsub(/rest_arr\[2\] == "stable"/, "rest_arr[2] == \"unstable\""); print }' "${repo_drift}/provision/apt-packages.sh" > "${repo_drift}/provision/apt-packages.sh.tmp"
+  mv "${repo_drift}/provision/apt-packages.sh.tmp" "${repo_drift}/provision/apt-packages.sh"
+  local drift_gh_apt_err="${test_dir}/drift_gh_apt.stderr"
+  local drift_gh_apt_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_gh_apt_err}" || drift_gh_apt_failed=1
+
+  # 8.6f GitHub CLI リポジトリ検証ロジックの不一致（coding-sandbox.yaml probes[1]）
+  setup_repo_copy "${repo_drift}"
+  awk '{ gsub(/rest_arr\[2\] == "stable"/, "rest_arr[2] == \"unstable\""); print }' "${repo_drift}/coding-sandbox.yaml" > "${repo_drift}/coding-sandbox.yaml.tmp"
+  mv "${repo_drift}/coding-sandbox.yaml.tmp" "${repo_drift}/coding-sandbox.yaml"
+  local drift_gh_probe_err="${test_dir}/drift_gh_probe.stderr"
+  local drift_gh_probe_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_gh_probe_err}" || drift_gh_probe_failed=1
+
+  # 8.6g cleanup() の不一致（provision/antigravity-cli.sh）および基準ファイル（provision/github-cli.sh）のドリフト・diff 出力
+  setup_repo_copy "${repo_drift}"
+  awk '{ gsub(/rm -f "\$\{tmp_files\[@\]\}"/, "rm -rf \"${tmp_files[@]}\""); print }' "${repo_drift}/provision/antigravity-cli.sh" > "${repo_drift}/provision/antigravity-cli.sh.tmp"
+  mv "${repo_drift}/provision/antigravity-cli.sh.tmp" "${repo_drift}/provision/antigravity-cli.sh"
+  local drift_cleanup_err="${test_dir}/drift_cleanup.stderr"
+  local drift_cleanup_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_cleanup_err}" || drift_cleanup_failed=1
+
+  setup_repo_copy "${repo_drift}"
+  awk '{ gsub(/DOWNLOAD_CONNECT_TIMEOUT:-10/, "DOWNLOAD_CONNECT_TIMEOUT:-99"); print }' "${repo_drift}/provision/github-cli.sh" > "${repo_drift}/provision/github-cli.sh.tmp"
+  mv "${repo_drift}/provision/github-cli.sh.tmp" "${repo_drift}/provision/github-cli.sh"
+  local drift_ref_err="${test_dir}/drift_ref.stderr"
+  local drift_ref_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_ref_err}" || drift_ref_failed=1
+
+  # 8.6h 関数定義の欠落（check_set_equal および抽出失敗経路）
+  setup_repo_copy "${repo_drift}"
+  awk '{ sub(/^download_file\(\) \{/, "renamed_download_file() {"); print }' "${repo_drift}/provision/mise.sh" > "${repo_drift}/provision/mise.sh.tmp"
+  mv "${repo_drift}/provision/mise.sh.tmp" "${repo_drift}/provision/mise.sh"
+  local missing_fn_err="${test_dir}/missing_fn.stderr"
+  local missing_fn_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${missing_fn_err}" || missing_fn_failed=1
+
+  # 8.6i GITHUB_CLI_KEYRING / GITHUB_CLI_REPO_LIST の既定値リテラル不一致（関数外のみ変更・空既定値・REPO_LIST 変更）
+  setup_repo_copy "${repo_drift}"
+  awk 'NR == 26 { sub(/githubcli-archive-keyring\.gpg/, "other-keyring.gpg") } { print }' "${repo_drift}/provision/github-cli.sh" > "${repo_drift}/provision/github-cli.sh.tmp"
+  mv "${repo_drift}/provision/github-cli.sh.tmp" "${repo_drift}/provision/github-cli.sh"
+  local drift_keyring_err="${test_dir}/drift_keyring.stderr"
+  local drift_keyring_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_keyring_err}" || drift_keyring_failed=1
+
+  setup_repo_copy "${repo_drift}"
+  awk 'NR == 26 { sub(/:-\/etc\/apt\/keyrings\/githubcli-archive-keyring\.gpg/, ":-") } { print }' "${repo_drift}/provision/github-cli.sh" > "${repo_drift}/provision/github-cli.sh.tmp"
+  mv "${repo_drift}/provision/github-cli.sh.tmp" "${repo_drift}/provision/github-cli.sh"
+  local drift_empty_default_err="${test_dir}/drift_empty_default.stderr"
+  local drift_empty_default_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_empty_default_err}" || drift_empty_default_failed=1
+
+  setup_repo_copy "${repo_drift}"
+  awk 'NR == 26 { sub(/githubcli-archive-keyring\.gpg/, " #other-keyring.gpg") } { print }' "${repo_drift}/provision/github-cli.sh" > "${repo_drift}/provision/github-cli.sh.tmp"
+  mv "${repo_drift}/provision/github-cli.sh.tmp" "${repo_drift}/provision/github-cli.sh"
+  local drift_quoted_hash_err="${test_dir}/drift_quoted_hash.stderr"
+  local drift_quoted_hash_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_quoted_hash_err}" || drift_quoted_hash_failed=1
+
+  setup_repo_copy "${repo_drift}"
+  awk 'NR > 180 { sub(/github-cli\.list/, "other-cli.list") } { print }' "${repo_drift}/provision/apt-packages.sh" > "${repo_drift}/provision/apt-packages.sh.tmp"
+  mv "${repo_drift}/provision/apt-packages.sh.tmp" "${repo_drift}/provision/apt-packages.sh"
+  local drift_repo_list_err="${test_dir}/drift_repo_list.stderr"
+  local drift_repo_list_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_repo_list_err}" || drift_repo_list_failed=1
+
+  # 8.6j 3 箇所すべてに同じ空行（YAML 内の 2 スペース空行を含む）や同一接頭辞の別変数・行末コメントが入った場合は誤検知せず通過すること
+  setup_repo_copy "${repo_drift}"
+  awk 'NR == 26 { $0 = $0 " # ${GITHUB_CLI_KEYRING:-/comment/ignored}\n: \"${GITHUB_CLI_KEYRING_BACKUP:-/backup/path}\" \"${GITHUB_CLI_REPO_LIST_BACKUP:-/backup/list}\"" } { print; if ($0 ~ /dpkg --print-architecture/) print "" }' "${repo_drift}/provision/github-cli.sh" > "${repo_drift}/provision/github-cli.sh.tmp"
+  mv "${repo_drift}/provision/github-cli.sh.tmp" "${repo_drift}/provision/github-cli.sh"
+  awk '{ print; if ($0 ~ /dpkg --print-architecture/) print "" }' "${repo_drift}/provision/apt-packages.sh" > "${repo_drift}/provision/apt-packages.sh.tmp"
+  mv "${repo_drift}/provision/apt-packages.sh.tmp" "${repo_drift}/provision/apt-packages.sh"
+  awk '{ print; if ($0 ~ /dpkg --print-architecture/) print "  " }' "${repo_drift}/coding-sandbox.yaml" > "${repo_drift}/coding-sandbox.yaml.tmp"
+  mv "${repo_drift}/coding-sandbox.yaml.tmp" "${repo_drift}/coding-sandbox.yaml"
+  local blank_line_rc=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" >/dev/null 2>&1 || blank_line_rc=$?
+
+  if [ "${drift_curl_rc_failed}" -eq 1 ] && grep -q "function 'is_transient_curl_rc()' in provision/docker-engine.sh does not match" "${drift_curl_rc_err}" && \
+     [ "${drift_http_failed}" -eq 1 ] && grep -q "function 'is_transient_http_code()' in provision/herdr.sh does not match" "${drift_http_err}" && \
+     [ "${drift_dl_failed}" -eq 1 ] && grep -q "function 'download_file()' in provision/mise.sh does not match" "${drift_dl_err}" && \
+     [ "${drift_verify_failed}" -eq 1 ] && grep -q "function 'verify_cli()' in provision/copilot-cli.sh does not match" "${drift_verify_err}" && \
+     [ "${drift_gh_apt_failed}" -eq 1 ] && grep -q "function 'is_official_gh_repo_configured()' in provision/apt-packages.sh does not match 'is_repo_configured()' in provision/github-cli.sh" "${drift_gh_apt_err}" && \
+     [ "${drift_gh_probe_failed}" -eq 1 ] && grep -q "function 'check_gh_repo()' in coding-sandbox.yaml (probes\[1\]) does not match 'is_repo_configured()' in provision/github-cli.sh" "${drift_gh_probe_err}" && \
+     [ "${drift_cleanup_failed}" -eq 1 ] && grep -q "function 'cleanup()' in provision/antigravity-cli.sh does not match" "${drift_cleanup_err}" && \
+     [ "${drift_ref_failed}" -eq 1 ] && [ "$(grep -c "function 'download_file()' in provision/.* does not match 'download_file()' in provision/github-cli.sh" "${drift_ref_err}")" -eq 5 ] && \
+     grep -q "^--- provision/github-cli.sh:download_file()" "${drift_ref_err}" && grep -q "DOWNLOAD_CONNECT_TIMEOUT" "${drift_ref_err}" && \
+     [ "${missing_fn_failed}" -eq 1 ] && grep -q "files defining download_file() in provision/\*.sh do not match expected set (missing: provision/mise.sh)" "${missing_fn_err}" && \
+     grep -q "could not extract function 'download_file()' from provision/mise.sh" "${missing_fn_err}" && \
+     [ "${drift_keyring_failed}" -eq 1 ] && grep -q "lint failed with 1 error(s)\." "${drift_keyring_err}" && \
+     grep -q "GITHUB_CLI_KEYRING default path .*extra: /etc/apt/keyrings/other-keyring.gpg" "${drift_keyring_err}" && \
+     [ "${drift_empty_default_failed}" -eq 1 ] && grep -q "GITHUB_CLI_KEYRING default path .*extra: <empty>" "${drift_empty_default_err}" && \
+     [ "${drift_quoted_hash_failed}" -eq 1 ] && grep -q "GITHUB_CLI_KEYRING default path .*extra: /etc/apt/keyrings/ #other-keyring.gpg" "${drift_quoted_hash_err}" && \
+     [ "${drift_repo_list_failed}" -eq 1 ] && grep -q "GITHUB_CLI_REPO_LIST default path .*extra: /etc/apt/sources.list.d/other-cli.list" "${drift_repo_list_err}" && \
+     [ "${blank_line_rc}" -eq 0 ]; then
+    log_pass "${suite}: detects drift in duplicated functions across provision/*.sh and coding-sandbox.yaml"
+  else
+    log_fail "${suite}: failed to detect duplicated function drift (curl_rc=${drift_curl_rc_failed}, http=${drift_http_failed}, dl=${drift_dl_failed}, verify=${drift_verify_failed}, gh_apt=${drift_gh_apt_failed}, gh_probe=${drift_gh_probe_failed}, cleanup=${drift_cleanup_failed}, ref=${drift_ref_failed}, missing=${missing_fn_failed}, keyring=${drift_keyring_failed}, empty_default=${drift_empty_default_failed}, quoted_hash=${drift_quoted_hash_failed}, repo_list=${drift_repo_list_failed}, blank_rc=${blank_line_rc})"
+  fi
 }
