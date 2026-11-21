@@ -91,7 +91,7 @@ macOS 26.7.1（Apple M2）、Lima 2.2.0、Ubuntu 26.04 LTS（カーネル 7.0）
 │   ├── authentication.md      # 初回のセットアップ（認証）・Git 署名鍵・退避と復元の詳細
 │   ├── security.md            # セキュリティ上の注意・マウント混入防止・ネットワーク隔離の詳細
 │   ├── troubleshooting.md     # トラブルシューティング・プロビジョニング検証仕様の詳細
-│   └── issue-prioritization.md # Issue 評価基準・優先順位ロードマップ
+│   └── issue-prioritization.md # 初期 Issue（21 件）の評価基準・優先順位ロードマップ（完了アーカイブ）
 ├── provision/                 # プロビジョニングスクリプト（起動のたびに実行されるため冪等に作ってある）
 │   ├── github-cli.sh          # mode: system  GitHub CLI の apt リポジトリ登録
 │   ├── docker-engine.sh       # mode: system  Docker Engine の apt リポジトリ登録・ラッパー
@@ -218,7 +218,7 @@ MISE_VERSION=2026.10.7
 limactl start ./coding-sandbox.yaml
 ```
 
-Git のユーザ名とメールアドレス、ホストループバック遮断、およびツールの固定バージョンをあらかじめ設定するには、作成時に `--param` で渡します（ホストの Git 設定をそのまま渡すこともできます）:
+Git のユーザ名とメールアドレス、ホストループバック遮断、エージェント指示配置、およびツールの固定バージョンをあらかじめ設定するには、作成時に `--param` で渡します（ホストの Git 設定をそのまま渡すこともできます）:
 
 ```sh
 limactl start \

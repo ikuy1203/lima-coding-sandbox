@@ -1,8 +1,8 @@
-# Issue 評価基準・優先順位ロードマップ
+# Issue 評価基準・優先順位ロードマップ（完了アーカイブ）
 
-本ドキュメントは、`lima-coding-sandbox` の Issue（計 21 件、#6〜#25・#29）について、プロジェクトの目的・セキュリティ・開発効率の観点から評価基準を定め、実装の優先順位とロードマップを整理したものです。
+本ドキュメントは、`lima-coding-sandbox` の初期ロードマップ対象 Issue（計 21 件、#6〜#25・#29）について、プロジェクトの目的・セキュリティ・開発効率の観点から評価基準を定め、実装の優先順位・意思決定・完了結果を整理したアーカイブです。以降の改善・保守タスクは [GitHub Issues](https://github.com/ikuy1203/lima-coding-sandbox/issues) で管理しています。
 
-> **最終更新: 2026-11-08** — 完了 21 件 / 未解決 0 件。Phase 1〜Phase 5 の**全 21 件が完了**しました。
+> **最終更新: 2026-11-21** — 完了 21 件 / 未解決 0 件。初期ロードマップ（Phase 1〜Phase 5）の**全 21 件が完了**しました。
 
 ---
 
@@ -44,13 +44,6 @@
 | [#29](https://github.com/ikuy1203/lima-coding-sandbox/issues/29) | [DX] Makefile を justfile に移行するか検討する（#17 の後） | [#52](https://github.com/ikuy1203/lima-coding-sandbox/pull/52) | 2026-11-08 | #17（`scripts/*.sh` への分離）および #11, #12, #19, #20, #23 完了後の再評価を実施。可読性・`shellcheck`・回帰テストの課題は現行の薄い `Makefile` + `scripts/*.sh` 構成で完全に解決しており、位置引数の要件やサブディレクトリ実行の需要もない一方、`just` 移行には新規依存（`brew install just`）の追加・変数指定順の非互換・`.env` 読み込み再実装等のコストが伴うため、移行せず現行構成を維持する結論でクローズ |
 | [#14](https://github.com/ikuy1203/lima-coding-sandbox/issues/14) | [Agent DX] Antigravity CLI 向けの Secret Service（Keyring）ヘッドレス対応の検証 | [#53](https://github.com/ikuy1203/lima-coding-sandbox/pull/53) | 2026-11-08 | 既存構成（Keyring 未導入）のまま `make shell` で `agy` にブラウザ OAuth ログインし、CLI 終了・`make stop`（VM 停止）・再度の `make shell`（VM 再起動）の後もログイン状態が維持されることを実機で確認。複数接続経路での D-Bus セッション問題や `SSH_AUTH_SOCK` への副作用を伴い、かつ同一 UID / `sudo` 可のエージェントに対する保護にもならないダミーパスワード Keyring の導入は不要と判断し、`docs/authentication.md` の記述を更新してクローズ |
 
-### 前回からの変更点
-
-- **#14（Antigravity CLI 向けの Secret Service / Keyring ヘッドレス対応の検証）の検証を完了し、Keyring 追加導入なし（対応不要）の判断でクローズ**:
-  - 既存の VM 構成（Keyring 未導入）のまま `make shell` で `agy` にブラウザ OAuth ログインし、CLI の終了・`make stop` による VM 停止・再度の `make shell`（VM 再起動）を経ても再ログイン不要でログイン状態が維持されることを実機で確認。
-  - これにより、`gnome-keyring` や `dbus-x11` をダミーパスワード自動アンロックで導入する必要がないことを確認（不要なパッケージ追加、複数接続経路での D-Bus セッション不整合、`SSH_AUTH_SOCK` への副作用、および同一 UID / `sudo` 可能なエージェントに対する見せかけの保護を回避）。
-  - `docs/authentication.md` の「ログイン情報が保存されるかどうかは未確認」という記述を実機確認結果に合わせて更新し、全 21 件の Issue 対応を完了。
-
 ---
 
 ## 1. プロジェクト方針と評価基準
@@ -71,13 +64,16 @@
 
 ---
 
-## 2. 未解決 Issue 優先度一覧
+## 2. 当初の優先度評価アーカイブ（Phase 3〜5）
+
+以下は Phase 1・Phase 2 完了時点（Phase 3 着手前）における残課題の重要度・難易度評価と選定理由の記録です。いずれも現在は完了しており、最終的な実装内容や判断結果（#14・#29 の見送り理由を含む）は「[0. 進捗状況](#0-進捗状況)」を参照してください。
 
 | 優先度 | # | タイトル | カテゴリ | 重要度 | 難易度 | 選定理由・依存関係 |
 |:---:|:---:|---|---|:---:|:---:|---|
 | **P3** | [#13](https://github.com/ikuy1203/lima-coding-sandbox/issues/13) | [CI] GitHub Actions でのプロビジョニングスクリプト実行テストの追加 | CI | **高** | **中〜高** | プロビジョニング改修（#24, #25, #21）のデグレを防ぐための自動テスト基盤。CI 上で構文だけでなく実行可能性を保証。#16 の週次 schedule 実行と組み合わせると上流の破壊も検知できる。 |
 | **P3** | [#24](https://github.com/ikuy1203/lima-coding-sandbox/issues/24) | [Provisioning] 外部ダウンロードのタイムアウト・リトライと失敗時の回復を整備する | Provisioning | **高** | **中** | 初回プロビジョニング時の一時的ネットワーク障害による破損スクリプト実行・途中終了を防止。#9 で `docker-engine.sh` の鍵取得は一時ファイル化されたため、残る `curl ... \| sh` スクリプトの一時ファイル取得、タイムアウト・リトライ、および `trap` による確実な後始末を整備する。 |
 | **P3** | [#25](https://github.com/ikuy1203/lima-coding-sandbox/issues/25) | [Provisioning] インストール済み判定と probes を配布元・実動作の確認に強化する | Provisioning | **高** | **中** | #9 で `github-cli.sh` の設定ファイル判定と `apt-packages.sh` の公式候補確認が導入された。これに加え、既存環境の配布元整合性や、CLI のファイル存在確認（`-x`）にとどまらない `--version` 実動作確認、Git 署名設定の診断を強化し、破損・誤判定を防止する。 |
+| **P3** | [#21](https://github.com/ikuy1203/lima-coding-sandbox/issues/21) | [Provisioning] サードパーティツールのバージョンを param で固定できるようにする | Provisioning | **中〜高** | **中** | Copilot CLI や mise 等の上流更新による突然の破壊を防ぎ、再現可能なサンドボックス環境を実現。 |
 | **P4** | [#17](https://github.com/ikuy1203/lima-coding-sandbox/issues/17) | [CI] Makefile のシェル処理を scripts/ に移して shellcheck の対象にする | CI / Maintenance | **中** | **低〜中** | Makefile（228 行）内の複雑なインラインスクリプト（#15 のマウント検出、#22 の terminfo、#10 の `forward`・`BLOCK_HOST_LOOPBACK` 検証など）を `scripts/` に切り出し、shellcheck で自動検査。#12, #20, #29 の前提。 |
 | **P4** | [#12](https://github.com/ikuy1203/lima-coding-sandbox/issues/12) | [DX] VM 再作成（make recreate）時の認証情報・署名鍵バックアップ支援 | DX | **中〜高** | **中** | `make recreate` のたびに認証セッションや Git コミット署名鍵が消える心理的ハードルを解消。 |
 | **P4** | [#20](https://github.com/ikuy1203/lima-coding-sandbox/issues/20) | [DX] Git の署名鍵の GitHub への登録・削除をホストの gh で支援する | DX | **中** | **中** | ホスト側の `gh` を利用して署名鍵の登録・削除を支援。鍵コメントに作成日・インスタンス名を含めて識別性を向上。 |
