@@ -18,7 +18,7 @@ readme=README.md
 # provision の file: の読み込みと minimumLimaVersion の確認も行われる
 limactl validate "${template}"
 
-shellcheck provision/*.sh scripts/*.sh scripts/tests/*.sh
+shellcheck provision/*.sh scripts/*.sh scripts/tests/*.sh .github/actions/*/*.sh
 
 # probes はテンプレートに直接書いてあるため、limactl template yq で取り出して検査する
 count=$(limactl template yq "${template}" '.probes | length')

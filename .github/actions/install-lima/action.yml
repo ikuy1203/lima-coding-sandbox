@@ -1,0 +1,18 @@
+name: Install Lima
+description: Lima のリリースバイナリをダウンロードし、SHA256 チェックサムを検証して PATH に追加する
+
+inputs:
+  version:
+    description: "インストールする Lima のバージョン（latest / minimum / バージョン番号 例: 2.2.0）"
+    required: false
+    default: "latest"
+
+runs:
+  using: composite
+  steps:
+    - name: Download, verify, and install Lima
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        LIMA_VERSION_SPEC: ${{ inputs.version }}
+      run: bash "${GITHUB_ACTION_PATH}/install.sh"
