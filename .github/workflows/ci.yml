@@ -30,23 +30,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Lima
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LIMA: ${{ matrix.lima }}
-        run: |
-          if [ "${LIMA}" = minimum ]; then
-            version=$(awk '$1 == "minimumLimaVersion:" { print $2 }' coding-sandbox.yaml)
-          else
-            version=$(gh release view --repo lima-vm/lima --json tagName --jq .tagName)
-            version=${version#v}
-          fi
-          tarball="lima-${version}-Linux-$(uname -m).tar.gz"
-          cd "${RUNNER_TEMP}"
-          gh release download "v${version}" --repo lima-vm/lima --pattern "${tarball}" --pattern SHA256SUMS
-          sha256sum --check --ignore-missing SHA256SUMS
-          mkdir lima
-          tar -C lima -xzf "${tarball}"
-          echo "${RUNNER_TEMP}/lima/bin" >>"${GITHUB_PATH}"
+        uses: ./.github/actions/install-lima
+        with:
+          version: ${{ matrix.lima }}
 
       - name: Show versions
         run: |
@@ -79,7 +65,7 @@ jobs:
             exit 0
           fi
 
-          pattern='^(coding-sandbox\.yaml|provision/|scripts/|\.github/workflows/ci\.yml)'
+          pattern='^(coding-sandbox\.yaml|provision/|scripts/|\.github/workflows/ci\.yml|\.github/actions/)'
           changed=""
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             if git fetch origin "${{ github.event.pull_request.base.sha }}" --depth=1; then
@@ -136,18 +122,9 @@ jobs:
           df -h
 
       - name: Install Lima (latest)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version=$(gh release view --repo lima-vm/lima --json tagName --jq .tagName)
-          version=${version#v}
-          tarball="lima-${version}-Linux-$(uname -m).tar.gz"
-          cd "${RUNNER_TEMP}"
-          gh release download "v${version}" --repo lima-vm/lima --pattern "${tarball}" --pattern SHA256SUMS
-          sha256sum --check --ignore-missing SHA256SUMS
-          mkdir lima
-          tar -C lima -xzf "${tarball}"
-          echo "${RUNNER_TEMP}/lima/bin" >>"${GITHUB_PATH}"
+        uses: ./.github/actions/install-lima
+        with:
+          version: latest
 
       - name: Show versions
         run: |

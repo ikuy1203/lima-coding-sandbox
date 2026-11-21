@@ -26,27 +26,36 @@ exit 0
 EOF
   chmod +x "${fake_bin}/limactl"
 
-  create_noop_stubs "${fake_bin}" shellcheck
+  cat > "${fake_bin}/shellcheck" << 'EOF'
+#!/bin/bash
+if [ -n "${STUB_SHELLCHECK_LOG:-}" ]; then
+  printf '%s\n' "$@" >> "${STUB_SHELLCHECK_LOG}"
+fi
+exit 0
+EOF
+  chmod +x "${fake_bin}/shellcheck"
 
   setup_repo_copy() {
     local dst="$1"
     rm -rf "${dst}"
-    mkdir -p "${dst}/provision" "${dst}/scripts/tests" "${dst}/docs"
+    mkdir -p "${dst}/provision" "${dst}/scripts/tests" "${dst}/docs" "${dst}/.github/actions/install-lima"
     cp "${REPO_ROOT}/coding-sandbox.yaml" "${REPO_ROOT}/Makefile" "${REPO_ROOT}/README.md" "${dst}/"
     cp "${REPO_ROOT}"/provision/*.sh "${dst}/provision/"
     cp "${REPO_ROOT}"/scripts/*.sh "${dst}/scripts/"
     cp "${REPO_ROOT}"/scripts/tests/*.sh "${dst}/scripts/tests/"
     cp "${REPO_ROOT}"/docs/*.md "${dst}/docs/"
+    cp "${REPO_ROOT}"/.github/actions/install-lima/*.sh "${dst}/.github/actions/install-lima/"
   }
 
-  # 8.1 正常なリポジトリ状態（通常ロケールおよび LC_ALL=C）で lint.sh が成功すること
+  # 8.1 正常なリポジトリ状態（通常ロケールおよび LC_ALL=C）で lint.sh が成功し、.github/actions/*/*.sh も shellcheck に渡ること
   log_test "${suite}: passes on consistent repository state (default and LC_ALL=C)"
   local repo_ok="${test_dir}/repo_ok"
   setup_repo_copy "${repo_ok}"
+  local sc_log="${test_dir}/shellcheck.log"
   local ok_rc=0 c_rc=0
-  LINT_REPO_ROOT="${repo_ok}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" >/dev/null 2>&1 || ok_rc=$?
+  STUB_SHELLCHECK_LOG="${sc_log}" LINT_REPO_ROOT="${repo_ok}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" >/dev/null 2>&1 || ok_rc=$?
   LC_ALL=C LINT_REPO_ROOT="${repo_ok}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" >/dev/null 2>&1 || c_rc=$?
-  if [ "${ok_rc}" -eq 0 ] && [ "${c_rc}" -eq 0 ]; then
+  if [ "${ok_rc}" -eq 0 ] && [ "${c_rc}" -eq 0 ] && grep -Fxq ".github/actions/install-lima/install.sh" "${sc_log}"; then
     log_pass "${suite}: passes on consistent repository state (default and LC_ALL=C)"
   else
     log_fail "${suite}: failed on valid repository state (ok_rc=${ok_rc}, c_rc=${c_rc})"
