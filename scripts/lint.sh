@@ -754,6 +754,888 @@ check_set_equal \
   "/etc/apt/sources.list.d/github-cli.list" \
   "${gh_repo_list_defaults}"
 
+# 7. GitHub Actions ワークフロー・アクションの steps[*].run 内での ${{ ... }} 直接展開検査
+check_workflow_run_expressions() {
+  local wf_file="$1"
+  local violations
+  violations=$(
+    awk '
+      function leading_spaces(s) {
+        match(s, /^[ ]*/)
+        return RLENGTH
+      }
+      function hex_val(h,    i, c, v, d) {
+        v = 0
+        for (i = 1; i <= length(h); i++) {
+          c = tolower(substr(h, i, 1))
+          d = index("0123456789abcdef", c)
+          if (d == 0) return -1
+          v = v * 16 + (d - 1)
+        }
+        return v
+      }
+      function repeat_nl(n,    i, out) {
+        out = ""
+        for (i = 1; i <= n; i++) out = out "\n"
+        return out
+      }
+      function is_target_run_path(p) {
+        return (p == "jobs.*.steps[*].run" || p == "runs.steps[*].run")
+      }
+      function is_target_prefix_path(p) {
+        return (p == "" || p == "jobs" || p == "jobs.*" || p == "jobs.*.steps" || p == "jobs.*.steps[*]" || p == "jobs.*.steps[*].run" || p == "runs" || p == "runs.steps" || p == "runs.steps[*]" || p == "runs.steps[*].run")
+      }
+      function child_path(base, key) {
+        if (key == "<<") return base
+        if (base == "") return key
+        if (base == "jobs") return "jobs.*"
+        return base "." key
+      }
+      function apply_rel(base, rel) {
+        if (rel == "") return base
+        if (base == "jobs" && substr(rel, 1, 2) == ".*") return "jobs" rel
+        if (base == "" && substr(rel, 1, 1) == ".") return substr(rel, 2)
+        return base rel
+      }
+      function clear_anchor(anc,    k) {
+        ANCHOR_DEFINED[anc] = 1
+        delete ANCHOR_KEY_VAL[anc]
+        for (k in ANCHOR_SUB_EXPR) {
+          if (index(k, anc SUBSEP) == 1) delete ANCHOR_SUB_EXPR[k]
+        }
+      }
+      function set_anchor_scalar_val(anc, val) {
+        if (anc != "" && length(val) <= 256) {
+          ANCHOR_KEY_VAL[anc] = val
+        }
+      }
+      function record_suffix_on_enclosing(full_path, extra_rel, own_anc,    d, anc, base, rel) {
+        if (own_anc != "") {
+          ANCHOR_SUB_EXPR[own_anc, extra_rel] = 1
+        }
+        for (d = 1; d <= depth; d++) {
+          anc = ctx_anchor[d]
+          if (anc != "") {
+            base = ctx_path[d]
+            if (full_path == base) {
+              rel = extra_rel
+            } else if (base == "jobs" && substr(full_path, 1, 6) == "jobs.*") {
+              rel = substr(full_path, 5) extra_rel
+            } else if (index(full_path, base) == 1) {
+              rel = substr(full_path, length(base) + 1) extra_rel
+            } else {
+              continue
+            }
+            ANCHOR_SUB_EXPR[anc, rel] = 1
+          }
+        }
+        for (d = 1; d <= flow_depth; d++) {
+          anc = f_anchor[d]
+          if (anc != "") {
+            base = f_path[d]
+            if (full_path == base) {
+              rel = extra_rel
+            } else if (base == "jobs" && substr(full_path, 1, 6) == "jobs.*") {
+              rel = substr(full_path, 5) extra_rel
+            } else if (index(full_path, base) == 1) {
+              rel = substr(full_path, length(base) + 1) extra_rel
+            } else {
+              continue
+            }
+            ANCHOR_SUB_EXPR[anc, rel] = 1
+          }
+        }
+      }
+      function report_line(line_no) {
+        if (!REPORTED_LINE[line_no]) {
+          print line_no ":expr"
+          REPORTED_LINE[line_no] = 1
+        }
+      }
+      function check_buf_and_report(line_no, buf, val_path, own_anc) {
+        if (index(buf, "${{") > 0) {
+          record_suffix_on_enclosing(val_path, "", own_anc)
+          if (is_target_run_path(val_path)) {
+            report_line(line_no)
+          }
+          return 1
+        }
+        return 0
+      }
+      function resolve_alias_at(alias_name, val_path, own_anc, line_no,    k, prefix, rel, combined) {
+        if (!ANCHOR_DEFINED[alias_name]) {
+          if (is_target_prefix_path(val_path)) report_line(line_no)
+          return
+        }
+        if (own_anc != "" && (alias_name in ANCHOR_KEY_VAL)) {
+          ANCHOR_KEY_VAL[own_anc] = ANCHOR_KEY_VAL[alias_name]
+        }
+        prefix = alias_name SUBSEP
+        for (k in ANCHOR_SUB_EXPR) {
+          if (index(k, prefix) == 1 && ANCHOR_SUB_EXPR[k]) {
+            rel = substr(k, length(prefix) + 1)
+            record_suffix_on_enclosing(val_path, rel, own_anc)
+            combined = apply_rel(val_path, rel)
+            if (is_target_run_path(combined)) {
+              report_line(line_no)
+            }
+          }
+        }
+      }
+      function scan_sq(s, start_i,    i, n, c, nxt, out) {
+        n = length(s); i = start_i; out = ""
+        while (i <= n) {
+          c = substr(s, i, 1)
+          if (c == "\047") {
+            nxt = (i < n) ? substr(s, i + 1, 1) : ""
+            if (nxt == "\047") {
+              out = out "\047"
+              i += 2
+              continue
+            }
+            SCAN_OUT = out; SCAN_POS = i + 1; SCAN_CLOSED = 1
+            return
+          }
+          out = out c
+          i++
+        }
+        SCAN_OUT = out; SCAN_POS = n + 1; SCAN_CLOSED = 0
+      }
+      function scan_dq(s, start_i,    i, n, c, esc, hv, out, trail_ws) {
+        n = length(s); i = start_i; out = ""; SCAN_LINE_CONT = 0; trail_ws = 0
+        while (i <= n) {
+          c = substr(s, i, 1)
+          if (c == "\"") {
+            SCAN_OUT = out; SCAN_POS = i + 1; SCAN_CLOSED = 1; SCAN_TRAIL_UNESC_WS = 0
+            return
+          }
+          if (c == "\\") {
+            if (i == n) {
+              SCAN_OUT = out; SCAN_POS = n + 1; SCAN_CLOSED = 0; SCAN_LINE_CONT = 1; SCAN_TRAIL_UNESC_WS = 0
+              return
+            }
+            trail_ws = 0
+            esc = substr(s, i + 1, 1)
+            if (esc == "x" && i + 3 <= n) {
+              hv = hex_val(substr(s, i + 2, 2))
+              if (hv >= 32 && hv <= 126) { out = out sprintf("%c", hv); i += 4; continue }
+            } else if (esc == "u" && i + 5 <= n) {
+              hv = hex_val(substr(s, i + 2, 4))
+              if (hv >= 32 && hv <= 126) { out = out sprintf("%c", hv); i += 6; continue }
+            } else if (esc == "U" && i + 9 <= n) {
+              hv = hex_val(substr(s, i + 2, 8))
+              if (hv >= 32 && hv <= 126) { out = out sprintf("%c", hv); i += 10; continue }
+            } else if (esc == "\"" || esc == "\\" || esc == "/") {
+              out = out esc; i += 2; continue
+            } else if (esc == "n") {
+              out = out "\n"; i += 2; continue
+            } else if (esc == "r") {
+              out = out "\r"; i += 2; continue
+            } else if (esc == "t") {
+              out = out "\t"; i += 2; continue
+            } else if (esc == " ") {
+              out = out " "; i += 2; continue
+            }
+            out = out esc; i += 2; continue
+          }
+          if (c == " " || c == "\t") trail_ws++
+          else trail_ws = 0
+          out = out c
+          i++
+        }
+        SCAN_OUT = out; SCAN_POS = n + 1; SCAN_CLOSED = 0; SCAN_TRAIL_UNESC_WS = trail_ws
+      }
+      function strip_plain_comment(s,    i, n, c, prev) {
+        n = length(s)
+        for (i = 1; i <= n; i++) {
+          c = substr(s, i, 1)
+          prev = (i > 1) ? substr(s, i - 1, 1) : ""
+          if (c == "#" && (i == 1 || prev ~ /[ \t]/)) {
+            return substr(s, 1, i - 1)
+          }
+        }
+        return s
+      }
+      function trim_ws(s) {
+        sub(/^[ \t]+/, "", s)
+        sub(/[ \t]+$/, "", s)
+        return s
+      }
+      function extract_props(s, register_anc,    tok, mlen) {
+        PROP_ANCHOR = ""
+        sub(/^[ \t]+/, "", s)
+        while (match(s, /^(&[^] \t,#\[{}]+|![^] \t,#\[{}]*)([ \t]+|$)/)) {
+          mlen = RLENGTH
+          tok = substr(s, 1, mlen)
+          sub(/[ \t]+$/, "", tok)
+          if (substr(tok, 1, 1) == "&") {
+            PROP_ANCHOR = substr(tok, 2)
+            if (register_anc && PROP_ANCHOR != "") clear_anchor(PROP_ANCHOR)
+          }
+          s = substr(s, mlen + 1)
+          sub(/^[ \t]+/, "", s)
+        }
+        PROP_REST = s
+        return s
+      }
+      function parse_scalar_key_atom(s, register_anc,    work, k, k_anc, aname) {
+        work = extract_props(s, register_anc)
+        k_anc = PROP_ANCHOR
+        if (substr(work, 1, 1) == "*") {
+          aname = trim_ws(strip_plain_comment(substr(work, 2)))
+          return (aname in ANCHOR_KEY_VAL ? ANCHOR_KEY_VAL[aname] : "run")
+        }
+        if (substr(work, 1, 1) == "\047") {
+          scan_sq(work, 2)
+          if (!SCAN_CLOSED) return ""
+          k = SCAN_OUT
+        } else if (substr(work, 1, 1) == "\"") {
+          scan_dq(work, 2)
+          if (!SCAN_CLOSED) return ""
+          k = SCAN_OUT
+        } else {
+          k = trim_ws(strip_plain_comment(work))
+        }
+        if (register_anc && k_anc != "") set_anchor_scalar_val(k_anc, k)
+        return k
+      }
+      function parse_mapping_key(s, in_flow, register_anc,    work, rem, k, cpos, mlen, k_anc, aname) {
+        work = extract_props(s, register_anc)
+        k_anc = PROP_ANCHOR
+        if (match(work, /^\*[^] \t,#\[{}:]+[ \t]*:([ \t]+|[,}\]]|$)/)) {
+          cpos = index(work, ":")
+          aname = substr(work, 2, cpos - 2)
+          sub(/[ \t]+$/, "", aname)
+          if (!in_flow && substr(work, cpos + 1) !~ /^([ \t]+|$)/) return 0
+          k = (aname in ANCHOR_KEY_VAL ? ANCHOR_KEY_VAL[aname] : "run")
+          rem = substr(work, cpos + 1)
+          PARSED_KEY = k; PARSED_REST = rem
+          return 1
+        }
+        if (substr(work, 1, 1) == "\047") {
+          scan_sq(work, 2)
+          if (!SCAN_CLOSED) return 0
+          k = SCAN_OUT
+          rem = substr(work, SCAN_POS)
+          if (rem !~ /^[ \t]*:/) return 0
+          sub(/^[ \t]*:/, "", rem)
+          if (register_anc && k_anc != "") set_anchor_scalar_val(k_anc, k)
+          PARSED_KEY = k; PARSED_REST = rem
+          return 1
+        }
+        if (substr(work, 1, 1) == "\"") {
+          scan_dq(work, 2)
+          if (!SCAN_CLOSED) return 0
+          k = SCAN_OUT
+          rem = substr(work, SCAN_POS)
+          if (rem !~ /^[ \t]*:/) return 0
+          sub(/^[ \t]*:/, "", rem)
+          if (register_anc && k_anc != "") set_anchor_scalar_val(k_anc, k)
+          PARSED_KEY = k; PARSED_REST = rem
+          return 1
+        }
+        if (in_flow) {
+          if (match(work, /^[^] \t:#,\[{}\047"*&!][^] \t:#,\[{}\047"]*[ \t]*:([ \t]+|[,}\]]|$)/) || match(work, /^[^] \t:#,\[{}\047"*&!][ \t]*:([ \t]+|[,}\]]|$)/)) {
+            cpos = index(work, ":")
+            k = substr(work, 1, cpos - 1)
+            sub(/[ \t]+$/, "", k)
+            rem = substr(work, cpos + 1)
+            if (register_anc && k_anc != "") set_anchor_scalar_val(k_anc, k)
+            PARSED_KEY = k; PARSED_REST = rem
+            return 1
+          }
+          return 0
+        }
+        if (match(work, /^[^] \t:#,\[{}\047"*&!][^] \t:#,\[{}\047"]*[ \t]*:([ \t]+|$)/) || match(work, /^[^] \t:#,\[{}\047"*&!][ \t]*:([ \t]+|$)/)) {
+          mlen = RLENGTH
+          cpos = index(work, ":")
+          k = substr(work, 1, cpos - 1)
+          sub(/[ \t]+$/, "", k)
+          rem = substr(work, mlen + 1)
+          if (register_anc && k_anc != "") set_anchor_scalar_val(k_anc, k)
+          PARSED_KEY = k; PARSED_REST = rem
+          return 1
+        }
+        return 0
+      }
+      function finalize_block_anchor(    final_val) {
+        if (block_anc == "") return
+        if (!block_has_lines) {
+          final_val = (block_chomp == "+" ? repeat_nl(block_pending_blanks) : "")
+        } else if (block_chomp == "-") {
+          final_val = block_key_acc
+        } else if (block_chomp == "+") {
+          final_val = block_key_acc "\n" repeat_nl(block_pending_blanks)
+        } else {
+          final_val = block_key_acc "\n"
+        }
+        set_anchor_scalar_val(block_anc, final_val)
+        block_anc = ""
+      }
+      function elem_path_for_seq(seq_path, is_merge) {
+        if (is_merge) return seq_path
+        return seq_path "[*]"
+      }
+      function consume_flow(s, line_no,    c, p, tok, anc, aname, is_m, part, sep) {
+        while (length(s) > 0 && flow_depth > 0) {
+          if (flow_quote != "") {
+            if (flow_quote == "\047") {
+              if (s ~ /^[ \t]*$/) { flow_quote_blanks++; return }
+              sub(/^[ \t]+/, "", s)
+              scan_sq(s, 1)
+              part = SCAN_OUT
+              if (!SCAN_CLOSED) sub(/[ \t]+$/, "", part)
+              sep = (flow_quote_blanks > 0 ? repeat_nl(flow_quote_blanks) : " ")
+              flow_quote_blanks = 0
+              if (length(flow_quote_key_acc) <= 256) flow_quote_key_acc = flow_quote_key_acc sep part
+              check_buf_and_report(line_no, SCAN_OUT, flow_quote_path, flow_quote_anc)
+              s = substr(s, SCAN_POS)
+              if (SCAN_CLOSED) {
+                set_anchor_scalar_val(flow_quote_anc, flow_quote_key_acc)
+                flow_quote = ""; flow_quote_buf = ""; flow_quote_key_acc = ""; flow_quote_path = ""; flow_quote_anc = ""
+              }
+            } else {
+              if (!flow_dq_cont && s ~ /^[ \t]*$/) { flow_quote_blanks++; return }
+              sub(/^[ \t]+/, "", s)
+              if (!flow_dq_cont) flow_quote_buf = ""
+              scan_dq(s, 1)
+              part = SCAN_OUT
+              if (!SCAN_CLOSED && !SCAN_LINE_CONT && SCAN_TRAIL_UNESC_WS > 0) {
+                part = substr(part, 1, length(part) - SCAN_TRAIL_UNESC_WS)
+              }
+              sep = (flow_dq_cont ? "" : (flow_quote_blanks > 0 ? repeat_nl(flow_quote_blanks) : " "))
+              flow_quote_blanks = 0
+              flow_dq_cont = SCAN_LINE_CONT
+              if (length(flow_quote_key_acc) <= 256) flow_quote_key_acc = flow_quote_key_acc sep part
+              flow_quote_buf = flow_quote_buf SCAN_OUT
+              check_buf_and_report(line_no, flow_quote_buf, flow_quote_path, flow_quote_anc)
+              if (SCAN_LINE_CONT && length(flow_quote_buf) > 2) flow_quote_buf = substr(flow_quote_buf, length(flow_quote_buf) - 1)
+              else if (!SCAN_LINE_CONT) flow_quote_buf = ""
+              s = substr(s, SCAN_POS)
+              if (SCAN_CLOSED) {
+                set_anchor_scalar_val(flow_quote_anc, flow_quote_key_acc)
+                flow_quote = ""; flow_quote_buf = ""; flow_quote_key_acc = ""; flow_quote_path = ""; flow_quote_anc = ""; flow_dq_cont = 0
+              }
+            }
+            continue
+          }
+          sub(/^[ \t]+/, "", s)
+          if (s == "" || substr(s, 1, 1) == "#") return
+          c = substr(s, 1, 1)
+          if (c == "{" || c == "[") {
+            p = f_cur_val_path[flow_depth]
+            is_m = f_cur_is_merge[flow_depth]
+            anc = f_pending_anc
+            f_pending_anc = ""
+            if (p == "") p = elem_path_for_seq(f_path[flow_depth], f_is_merge[flow_depth])
+            flow_depth++
+            f_type[flow_depth] = (c == "{" ? "map" : "seq")
+            f_path[flow_depth] = p
+            f_is_merge[flow_depth] = (c == "[" ? is_m : 0)
+            f_anchor[flow_depth] = anc
+            f_expect_val[flow_depth] = 0
+            f_cur_val_path[flow_depth] = ""
+            f_cur_is_merge[flow_depth] = 0
+            s = substr(s, 2)
+            continue
+          }
+          if (c == "}" || c == "]") {
+            f_anchor[flow_depth] = ""
+            flow_depth--
+            if (flow_depth > 0) {
+              f_expect_val[flow_depth] = 0
+              f_cur_val_path[flow_depth] = ""
+              f_cur_is_merge[flow_depth] = 0
+            }
+            s = substr(s, 2)
+            continue
+          }
+          if (c == ",") {
+            f_expect_val[flow_depth] = 0
+            f_cur_val_path[flow_depth] = ""
+            f_cur_is_merge[flow_depth] = 0
+            s = substr(s, 2)
+            continue
+          }
+          if (f_type[flow_depth] == "map" && !f_expect_val[flow_depth]) {
+            if (parse_mapping_key(s, 1, 1)) {
+              f_expect_val[flow_depth] = 1
+              f_cur_is_merge[flow_depth] = (PARSED_KEY == "<<" ? 1 : 0)
+              f_cur_val_path[flow_depth] = child_path(f_path[flow_depth], PARSED_KEY)
+              s = PARSED_REST
+              continue
+            }
+          }
+          p = (f_type[flow_depth] == "map" ? f_cur_val_path[flow_depth] : elem_path_for_seq(f_path[flow_depth], f_is_merge[flow_depth]))
+          s = extract_props(s, 1)
+          anc = PROP_ANCHOR
+          if (s == "" || substr(s, 1, 1) == "#") return
+          c = substr(s, 1, 1)
+          if (c == "{" || c == "[") {
+            f_cur_val_path[flow_depth] = p
+            f_pending_anc = anc
+            continue
+          }
+          if (c == "*") {
+            match(s, /^\*[^] \t,#\[{}]+/)
+            aname = substr(s, 2, RLENGTH - 1)
+            resolve_alias_at(aname, p, anc, line_no)
+            s = substr(s, RLENGTH + 1)
+            continue
+          }
+          if (c == "\047") {
+            scan_sq(s, 2)
+            part = SCAN_OUT
+            if (!SCAN_CLOSED) sub(/[ \t]+$/, "", part)
+            check_buf_and_report(line_no, SCAN_OUT, p, anc)
+            s = substr(s, SCAN_POS)
+            if (SCAN_CLOSED) {
+              set_anchor_scalar_val(anc, part)
+            } else {
+              flow_quote = "\047"; flow_quote_path = p; flow_quote_anc = anc; flow_quote_buf = ""; flow_quote_key_acc = part; flow_quote_blanks = 0
+            }
+            continue
+          }
+          if (c == "\"") {
+            scan_dq(s, 2)
+            part = SCAN_OUT
+            if (!SCAN_CLOSED && !SCAN_LINE_CONT && SCAN_TRAIL_UNESC_WS > 0) {
+              part = substr(part, 1, length(part) - SCAN_TRAIL_UNESC_WS)
+            }
+            check_buf_and_report(line_no, SCAN_OUT, p, anc)
+            s = substr(s, SCAN_POS)
+            if (SCAN_CLOSED) {
+              set_anchor_scalar_val(anc, part)
+            } else {
+              flow_quote = "\""; flow_quote_path = p; flow_quote_anc = anc
+              flow_dq_cont = SCAN_LINE_CONT; flow_quote_key_acc = part; flow_quote_blanks = 0
+              flow_quote_buf = (SCAN_LINE_CONT && length(SCAN_OUT) > 2 ? substr(SCAN_OUT, length(SCAN_OUT) - 1) : SCAN_OUT)
+            }
+            continue
+          }
+          tok = ""
+          while (length(s) > 0) {
+            c = substr(s, 1, 1)
+            if (c == "," || c == "}" || c == "]") break
+            if (c == "#" && (tok == "" || substr(tok, length(tok), 1) ~ /[ \t]/)) { s = ""; break }
+            tok = tok c
+            s = substr(s, 2)
+          }
+          tok = trim_ws(tok)
+          set_anchor_scalar_val(anc, tok)
+          check_buf_and_report(line_no, tok, p, anc)
+        }
+      }
+      function start_value(raw_rest, key_indent, val_path, is_merge_key, line_no, inherited_anc,    v, c, v_clean, anc, aname, part) {
+        v = extract_props(raw_rest, 1)
+        anc = (PROP_ANCHOR != "" ? PROP_ANCHOR : inherited_anc)
+        if (anc != "" && depth > 0 && ctx_path[depth] == val_path && ctx_anchor[depth] == "") {
+          ctx_anchor[depth] = anc
+        }
+        if (v == "" || substr(v, 1, 1) == "#") {
+          pending_val = 1
+          pending_key_indent = key_indent
+          pending_val_path = val_path
+          pending_is_merge = is_merge_key
+          pending_anc = anc
+          return
+        }
+        c = substr(v, 1, 1)
+        if (c == "*") {
+          v_clean = trim_ws(strip_plain_comment(v))
+          if (match(v_clean, /^\*[^] \t,#\[{}]+$/)) {
+            aname = substr(v_clean, 2)
+            resolve_alias_at(aname, val_path, anc, line_no)
+            return
+          }
+        }
+        if (c == "{" || c == "[") {
+          flow_depth = 1
+          f_type[1] = (c == "{" ? "map" : "seq")
+          f_path[1] = val_path
+          f_is_merge[1] = (c == "[" ? is_merge_key : 0)
+          f_anchor[1] = anc
+          f_expect_val[1] = 0
+          f_cur_val_path[1] = ""
+          f_cur_is_merge[1] = 0
+          f_pending_anc = ""
+          consume_flow(substr(v, 2), line_no)
+          return
+        }
+        if (c == "\047") {
+          scan_sq(v, 2)
+          part = SCAN_OUT
+          if (!SCAN_CLOSED) sub(/[ \t]+$/, "", part)
+          check_buf_and_report(line_no, SCAN_OUT, val_path, anc)
+          if (SCAN_CLOSED) {
+            set_anchor_scalar_val(anc, part)
+          } else {
+            state = "quote"; quote_char = "\047"; quote_path = val_path; quote_anc = anc; quote_buf = ""; quote_key_acc = part; quote_blanks = 0
+          }
+          return
+        }
+        if (c == "\"") {
+          scan_dq(v, 2)
+          part = SCAN_OUT
+          if (!SCAN_CLOSED && !SCAN_LINE_CONT && SCAN_TRAIL_UNESC_WS > 0) {
+            part = substr(part, 1, length(part) - SCAN_TRAIL_UNESC_WS)
+          }
+          check_buf_and_report(line_no, SCAN_OUT, val_path, anc)
+          if (SCAN_CLOSED) {
+            set_anchor_scalar_val(anc, part)
+          } else {
+            state = "quote"; quote_char = "\""; quote_path = val_path; quote_anc = anc
+            quote_dq_cont = SCAN_LINE_CONT; quote_key_acc = part; quote_blanks = 0
+            quote_buf = (SCAN_LINE_CONT && length(SCAN_OUT) > 2 ? substr(SCAN_OUT, length(SCAN_OUT) - 1) : SCAN_OUT)
+          }
+          return
+        }
+        v_clean = trim_ws(strip_plain_comment(v))
+        if (v_clean ~ /^[|>]([-+]?[1-9]?|[1-9][-+]?)$/) {
+          state = "block"
+          block_path = val_path
+          block_anc = anc
+          block_style = substr(v_clean, 1, 1)
+          block_chomp = (index(v_clean, "-") > 0 ? "-" : (index(v_clean, "+") > 0 ? "+" : ""))
+          block_key_acc = ""
+          block_has_lines = 0
+          block_pending_blanks = 0
+          block_min_indent = key_indent + 1
+          if (match(v_clean, /[1-9]/)) {
+            block_scalar_indent = key_indent + substr(v_clean, RSTART, 1) + 0
+          } else {
+            block_scalar_indent = 0
+          }
+          return
+        }
+        set_anchor_scalar_val(anc, v_clean)
+        check_buf_and_report(line_no, v_clean, val_path, anc)
+        state = "plain"
+        plain_min_indent = key_indent + 1
+        plain_path = val_path
+        plain_anc = anc
+        plain_key_acc = v_clean
+        plain_blanks = 0
+      }
+      BEGIN {
+        state = "normal"
+        depth = 0
+        flow_depth = 0
+        flow_quote = ""
+        f_pending_anc = ""
+        pending_val = 0
+        pending_key_indent = -1
+        pending_val_path = ""
+        pending_is_merge = 0
+        pending_anc = ""
+        explicit_key_indent = -1
+        explicit_key_name = ""
+      }
+      {
+        raw = $0
+        sub(/\r$/, "", raw)
+
+        if (flow_depth > 0) {
+          consume_flow(raw, NR)
+          next
+        }
+
+        if (state == "quote") {
+          if (quote_char == "\047") {
+            if (raw ~ /^[ \t]*$/) { quote_blanks++; next }
+            sub_line = raw; sub(/^[ \t]+/, "", sub_line)
+            scan_sq(sub_line, 1)
+            part = SCAN_OUT
+            if (!SCAN_CLOSED) sub(/[ \t]+$/, "", part)
+            sep = (quote_blanks > 0 ? repeat_nl(quote_blanks) : " ")
+            quote_blanks = 0
+            if (length(quote_key_acc) <= 256) quote_key_acc = quote_key_acc sep part
+            check_buf_and_report(NR, SCAN_OUT, quote_path, quote_anc)
+            if (SCAN_CLOSED) {
+              set_anchor_scalar_val(quote_anc, quote_key_acc)
+              state = "normal"; quote_buf = ""; quote_key_acc = ""; quote_path = ""; quote_anc = ""
+            }
+          } else {
+            if (!quote_dq_cont && raw ~ /^[ \t]*$/) { quote_blanks++; next }
+            sub_line = raw; sub(/^[ \t]+/, "", sub_line)
+            if (!quote_dq_cont) quote_buf = ""
+            scan_dq(sub_line, 1)
+            part = SCAN_OUT
+            if (!SCAN_CLOSED && !SCAN_LINE_CONT && SCAN_TRAIL_UNESC_WS > 0) {
+              part = substr(part, 1, length(part) - SCAN_TRAIL_UNESC_WS)
+            }
+            sep = (quote_dq_cont ? "" : (quote_blanks > 0 ? repeat_nl(quote_blanks) : " "))
+            quote_blanks = 0
+            quote_dq_cont = SCAN_LINE_CONT
+            if (length(quote_key_acc) <= 256) quote_key_acc = quote_key_acc sep part
+            quote_buf = quote_buf SCAN_OUT
+            check_buf_and_report(NR, quote_buf, quote_path, quote_anc)
+            if (SCAN_LINE_CONT && length(quote_buf) > 2) quote_buf = substr(quote_buf, length(quote_buf) - 1)
+            else if (!SCAN_LINE_CONT) quote_buf = ""
+            if (SCAN_CLOSED) {
+              set_anchor_scalar_val(quote_anc, quote_key_acc)
+              state = "normal"; quote_buf = ""; quote_key_acc = ""; quote_path = ""; quote_anc = ""; quote_dq_cont = 0
+            }
+          }
+          next
+        }
+
+        if (state == "block") {
+          if (raw ~ /^[ ]*$/) {
+            if (block_scalar_indent > 0 && length(raw) > block_scalar_indent) {
+              b_content = substr(raw, block_scalar_indent + 1)
+              if (block_anc != "" && length(block_key_acc) <= 256) {
+                if (!block_has_lines) {
+                  block_key_acc = repeat_nl(block_pending_blanks) b_content
+                  block_has_lines = 1
+                } else if (block_style == "|") {
+                  block_key_acc = block_key_acc "\n" repeat_nl(block_pending_blanks) b_content
+                } else {
+                  block_key_acc = block_key_acc (block_pending_blanks > 0 ? repeat_nl(block_pending_blanks) : " ") b_content
+                }
+                block_pending_blanks = 0
+              }
+            } else {
+              block_pending_blanks++
+            }
+            next
+          }
+          ind = leading_spaces(raw)
+          if (block_scalar_indent == 0) {
+            if (ind >= block_min_indent) {
+              block_scalar_indent = ind
+            } else {
+              finalize_block_anchor()
+              state = "normal"
+            }
+          } else if (ind < block_scalar_indent) {
+            finalize_block_anchor()
+            state = "normal"
+          }
+          if (state == "block") {
+            b_content = substr(raw, block_scalar_indent + 1)
+            if (block_anc != "" && length(block_key_acc) <= 256) {
+              if (!block_has_lines) {
+                block_key_acc = repeat_nl(block_pending_blanks) b_content
+                block_has_lines = 1
+              } else if (block_style == "|") {
+                block_key_acc = block_key_acc "\n" repeat_nl(block_pending_blanks) b_content
+              } else {
+                block_key_acc = block_key_acc (block_pending_blanks > 0 ? repeat_nl(block_pending_blanks) : " ") b_content
+              }
+              block_pending_blanks = 0
+            }
+            check_buf_and_report(NR, raw, block_path, block_anc)
+            next
+          }
+        }
+
+        if (state == "plain") {
+          if (raw ~ /^[ \t]*$/) { plain_blanks++; next }
+          ind = leading_spaces(raw)
+          trimmed_chk = raw; sub(/^[ \t]+/, "", trimmed_chk)
+          if (substr(trimmed_chk, 1, 1) == "#") next
+          if (ind < plain_min_indent) {
+            plain_anc = ""
+            state = "normal"
+          } else {
+            p_val = trim_ws(strip_plain_comment(raw))
+            if (plain_anc != "" && length(plain_key_acc) <= 256) {
+              plain_key_acc = plain_key_acc (plain_blanks > 0 ? repeat_nl(plain_blanks) : " ") p_val
+              set_anchor_scalar_val(plain_anc, plain_key_acc)
+            }
+            plain_blanks = 0
+            check_buf_and_report(NR, p_val, plain_path, plain_anc)
+            next
+          }
+        }
+
+        if (raw ~ /^[ \t]*$/) next
+        ind = leading_spaces(raw)
+        rest_line = substr(raw, ind + 1)
+        trimmed_rest = rest_line; sub(/^[ \t]+/, "", trimmed_rest)
+        if (substr(trimmed_rest, 1, 1) == "#") next
+        if (rest_line ~ /^---([ \t]+|$)/ || rest_line ~ /^\.\.\.([ \t]+|$)/) {
+          depth = 0
+          pending_val = 0
+          explicit_key_indent = -1
+          delete ANCHOR_DEFINED
+          delete ANCHOR_KEY_VAL
+          delete ANCHOR_SUB_EXPR
+          next
+        }
+
+        if (pending_val) {
+          if (ind > pending_key_indent && rest_line !~ /^(-[ \t]+|-$)/ && rest_line !~ /^\?([ \t]+|$)/ && !parse_mapping_key(rest_line, 0, 0)) {
+            pv_indent = pending_key_indent
+            pv_path = pending_val_path
+            pv_merge = pending_is_merge
+            pv_anc = pending_anc
+            pending_val = 0
+            start_value(rest_line, pv_indent, pv_path, pv_merge, NR, pv_anc)
+            next
+          }
+          pending_val = 0
+        }
+
+        if (rest_line ~ /^(-[ \t]+|-$)/) {
+          while (depth > 0 && (ind < ctx_indent[depth] || (ind == ctx_indent[depth] && ctx_kind[depth] == "seq_item"))) {
+            ctx_anchor[depth] = ""
+            depth--
+          }
+          if (explicit_key_indent >= ind) explicit_key_indent = -1
+          cur_base = (depth > 0 ? ctx_path[depth] : "")
+          is_m_seq = (depth > 0 && ctx_is_merge[depth] ? 1 : 0)
+          depth++
+          ctx_indent[depth] = ind
+          ctx_kind[depth] = "seq_item"
+          ctx_path[depth] = elem_path_for_seq(cur_base, is_m_seq)
+          ctx_anchor[depth] = ""
+          ctx_is_merge[depth] = 0
+
+          if (rest_line == "-") {
+            pending_val = 1
+            pending_key_indent = ind
+            pending_val_path = ctx_path[depth]
+            pending_is_merge = 0
+            pending_anc = ""
+            next
+          }
+          match(rest_line, /^-[ \t]+/)
+          after_dash_col = ind + RLENGTH
+          rest_line = substr(rest_line, RLENGTH + 1)
+          trimmed_seq = rest_line; sub(/^[ \t]+/, "", trimmed_seq)
+          if (trimmed_seq == "" || substr(trimmed_seq, 1, 1) == "#") {
+            pending_val = 1
+            pending_key_indent = ind
+            pending_val_path = ctx_path[depth]
+            pending_is_merge = 0
+            pending_anc = ""
+            next
+          }
+
+          if (match(rest_line, /^\?[ \t]+/)) {
+            q_rest = substr(rest_line, RLENGTH + 1)
+            if (parse_mapping_key(q_rest, 0, 1)) {
+              k_path = child_path(ctx_path[depth], PARSED_KEY)
+              depth++
+              ctx_indent[depth] = after_dash_col
+              ctx_kind[depth] = "map_key"
+              ctx_path[depth] = k_path
+              ctx_anchor[depth] = ""
+              ctx_is_merge[depth] = (PARSED_KEY == "<<" ? 1 : 0)
+              start_value(PARSED_REST, after_dash_col, k_path, ctx_is_merge[depth], NR, "")
+            } else {
+              explicit_key_indent = after_dash_col
+              explicit_key_name = parse_scalar_key_atom(q_rest, 1)
+            }
+            next
+          }
+
+          if (!parse_mapping_key(rest_line, 0, 1)) {
+            start_value(rest_line, ind, ctx_path[depth], 0, NR, "")
+            next
+          }
+
+          k_path = child_path(ctx_path[depth], PARSED_KEY)
+          depth++
+          ctx_indent[depth] = after_dash_col
+          ctx_kind[depth] = "map_key"
+          ctx_path[depth] = k_path
+          ctx_anchor[depth] = ""
+          ctx_is_merge[depth] = (PARSED_KEY == "<<" ? 1 : 0)
+          start_value(PARSED_REST, after_dash_col, k_path, ctx_is_merge[depth], NR, "")
+          next
+        }
+
+        if (explicit_key_indent == ind && match(rest_line, /^:([ \t]+|$)/)) {
+          erest = substr(rest_line, RLENGTH + 1)
+          while (depth > 0 && ind <= ctx_indent[depth]) {
+            ctx_anchor[depth] = ""
+            depth--
+          }
+          cur_base = (depth > 0 ? ctx_path[depth] : "")
+          k_path = child_path(cur_base, explicit_key_name)
+          explicit_key_name_saved = explicit_key_name
+          explicit_key_indent = -1
+          explicit_key_name = ""
+          depth++
+          ctx_indent[depth] = ind
+          ctx_kind[depth] = "map_key"
+          ctx_path[depth] = k_path
+          ctx_anchor[depth] = ""
+          ctx_is_merge[depth] = (explicit_key_name_saved == "<<" ? 1 : 0)
+          start_value(erest, ind, k_path, ctx_is_merge[depth], NR, "")
+          next
+        }
+
+        while (depth > 0 && ind <= ctx_indent[depth]) {
+          ctx_anchor[depth] = ""
+          depth--
+        }
+        if (explicit_key_indent >= ind) explicit_key_indent = -1
+
+        if (match(rest_line, /^\?[ \t]+/)) {
+          q_rest = substr(rest_line, RLENGTH + 1)
+          if (parse_mapping_key(q_rest, 0, 1)) {
+            cur_base = (depth > 0 ? ctx_path[depth] : "")
+            k_path = child_path(cur_base, PARSED_KEY)
+            depth++
+            ctx_indent[depth] = ind
+            ctx_kind[depth] = "map_key"
+            ctx_path[depth] = k_path
+            ctx_anchor[depth] = ""
+            ctx_is_merge[depth] = (PARSED_KEY == "<<" ? 1 : 0)
+            start_value(PARSED_REST, ind, k_path, ctx_is_merge[depth], NR, "")
+          } else {
+            explicit_key_indent = ind
+            explicit_key_name = parse_scalar_key_atom(q_rest, 1)
+          }
+          next
+        }
+
+        if (!parse_mapping_key(rest_line, 0, 1)) {
+          cur_base = (depth > 0 ? ctx_path[depth] : "")
+          start_value(rest_line, ind, cur_base, 0, NR, "")
+          next
+        }
+
+        cur_base = (depth > 0 ? ctx_path[depth] : "")
+        k_path = child_path(cur_base, PARSED_KEY)
+        depth++
+        ctx_indent[depth] = ind
+        ctx_kind[depth] = "map_key"
+        ctx_path[depth] = k_path
+        ctx_anchor[depth] = ""
+        ctx_is_merge[depth] = (PARSED_KEY == "<<" ? 1 : 0)
+        start_value(PARSED_REST, ind, k_path, ctx_is_merge[depth], NR, "")
+      }
+    ' "${wf_file}"
+  )
+
+  local entry line_no
+  while IFS= read -r entry; do
+    [ -n "${entry}" ] || continue
+    line_no="${entry%%:*}"
+    lint_err "${wf_file}:${line_no}: direct \${{ ... }} expression in 'run:' block (pass via step 'env:' instead)"
+  done <<< "${violations}"
+}
+
+if [ ! -f ".github/workflows/ci.yml" ]; then
+  lint_err "missing required workflow file '.github/workflows/ci.yml'"
+fi
+for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
+  [ -f "${wf}" ] || continue
+  check_workflow_run_expressions "${wf}"
+done
+if [ -d ".github/actions" ]; then
+  action_yamls=$(find .github/actions -type f \( -name '*.yml' -o -name '*.yaml' \) | LC_ALL=C sort)
+  while IFS= read -r wf; do
+    [ -n "${wf}" ] || continue
+    check_workflow_run_expressions "${wf}"
+  done <<< "${action_yamls}"
+fi
+
 if [ "${lint_errors}" -gt 0 ]; then
   echo "lint failed with ${lint_errors} error(s)." >&2
   exit 1

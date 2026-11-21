@@ -601,7 +601,7 @@ VM 内で個別に更新する場合は、以下のコマンドを実行しま�
 
 ### 静的検査とローカル回帰テスト
 
-`scripts/lint.sh` で、テンプレートの検証（`limactl validate`）、スクリプト（`provision/*.sh`、`scripts/*.sh`、`scripts/tests/*.sh`、`.github/actions/*/*.sh`）およびテンプレートに書いた probes の `shellcheck`、ならびにドキュメント・設定・重複関数の整合性検査を実行します（shellcheck は `brew install shellcheck` でインストールする）。
+`scripts/lint.sh` で、テンプレートの検証（`limactl validate`）、スクリプト（`provision/*.sh`、`scripts/*.sh`、`scripts/tests/*.sh`、`.github/actions/*/*.sh`）およびテンプレートに書いた probes の `shellcheck`、ならびにドキュメント・設定・重複関数・GitHub Actions ワークフローの整合性検査を実行します（shellcheck は `brew install shellcheck` でインストールする）。
 
 ```sh
 make lint    # または ./scripts/lint.sh
@@ -620,7 +620,7 @@ bash ./scripts/test.sh lib_functions probes    # 指定したスイートのみ�
 GitHub Actions（`.github/workflows/ci.yml`）では、以下の 2 段階で自動検証を行います。
 
 1. **`lint` ジョブ**: main ブランチへの push・すべての pull request・定期実行（`schedule`）・手動実行（`workflow_dispatch`）で、`minimumLimaVersion` と最新リリースの 2 つの Lima バージョンで `scripts/lint.sh` および `scripts/test.sh` を実行します。
-2. **`provision-vm` ジョブ**: `ubuntu-latest`（KVM ハードウェアアクセラレーションが有効な `x86_64` Linux ランナー）上で実際に Lima VM（QEMU）を作成・初回起動し、主要 CLI や Git 署名・ファイアウォール・エージェント指示ファイルの配置と全 probes を検証します。さらに VM の停止・再起動（`limactl stop` → `limactl start`）を行い、署名鍵の不変性や設定重複がないことを確認します（GitHub Actions の ARM ランナーでは `/dev/kvm` が利用できないため、CI の実 VM 検証は `x86_64` 環境が対象となり、Apple silicon 向けの `aarch64` 固有バイナリ差は対象外です）。アクション分数節約のため、定期実行（`schedule`）・手動実行（`workflow_dispatch`）、または `coding-sandbox.yaml`・`provision/`・`scripts/`・`ci.yml`・`.github/actions/` に変更を含む push / pull request で実行されます。
+2. **`provision-vm` ジョブ**: `ubuntu-latest`（KVM ハードウェアアクセラレーションが有効な `x86_64` Linux ランナー）上で実際に Lima VM（QEMU）を作成・初回起動し、主要 CLI や Git 署名・ファイアウォール・エージェント指示ファイルの配置と全 probes を検証します。さらに VM の停止・再起動（`limactl stop` → `limactl start`）を行い、署名鍵の不変性や設定重複がないことを確認します（GitHub Actions の ARM ランナーでは `/dev/kvm` が利用できないため、CI の実 VM 検証は `x86_64` 環境が対象となり、Apple silicon 向けの `aarch64` 固有バイナリ差は対象外です）。アクション分数節約のため、定期実行（`schedule`）・手動実行（`workflow_dispatch`）、または `coding-sandbox.yaml`・`Makefile`・`provision/`・`scripts/`・`ci.yml`・`.github/actions/` に変更を含む push / pull request で実行されます。
 
 push しない間に Lima の新しいリリースでテンプレートの検証が通らなくなったり、外部 URL の変更でプロビジョニングが壊れたりしても気づけるように、毎週火曜の 9:23（日本時間）にも同じ CI を定期実行します。失敗したときは、GitHub の通知（Settings → Notifications → Actions）で知らせが届きます。
 
