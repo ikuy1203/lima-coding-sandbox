@@ -17,6 +17,13 @@ test_lint_checks() {
   cat > "${fake_bin}/limactl" << 'EOF'
 #!/bin/bash
 set -eu
+if [ -n "${STUB_LIMACTL_ENV_LOG:-}" ]; then
+  if [ -n "${LIMA_HOME:-}" ] && [ -d "${LIMA_HOME}" ]; then
+    printf 'LIMA_HOME=%s (dir_exists=1)\n' "${LIMA_HOME}" >> "${STUB_LIMACTL_ENV_LOG}"
+  else
+    printf 'LIMA_HOME=%s (dir_exists=0)\n' "${LIMA_HOME:-}" >> "${STUB_LIMACTL_ENV_LOG}"
+  fi
+fi
 case "$*" in
   *".probes | length"*)
     echo "${STUB_LIMACTL_PROBE_COUNT:-0}"
@@ -38,12 +45,14 @@ EOF
   setup_repo_copy() {
     local dst="$1"
     rm -rf "${dst}"
-    mkdir -p "${dst}/provision" "${dst}/scripts/tests" "${dst}/docs" "${dst}/.github/actions/install-lima"
+    mkdir -p "${dst}/provision" "${dst}/scripts/tests" "${dst}/docs" "${dst}/.github/workflows" "${dst}/.github/actions/install-lima"
     cp "${REPO_ROOT}/coding-sandbox.yaml" "${REPO_ROOT}/Makefile" "${REPO_ROOT}/README.md" "${dst}/"
     cp "${REPO_ROOT}"/provision/*.sh "${dst}/provision/"
     cp "${REPO_ROOT}"/scripts/*.sh "${dst}/scripts/"
     cp "${REPO_ROOT}"/scripts/tests/*.sh "${dst}/scripts/tests/"
     cp "${REPO_ROOT}"/docs/*.md "${dst}/docs/"
+    cp "${REPO_ROOT}"/.github/workflows/*.yml "${dst}/.github/workflows/"
+    cp "${REPO_ROOT}"/.github/actions/install-lima/*.yml "${dst}/.github/actions/install-lima/"
     cp "${REPO_ROOT}"/.github/actions/install-lima/*.sh "${dst}/.github/actions/install-lima/"
   }
 
@@ -390,5 +399,340 @@ EOF
     log_pass "${suite}: detects drift in duplicated functions across provision/*.sh and coding-sandbox.yaml"
   else
     log_fail "${suite}: failed to detect duplicated function drift (curl_rc=${drift_curl_rc_failed}, http=${drift_http_failed}, dl=${drift_dl_failed}, verify=${drift_verify_failed}, gh_apt=${drift_gh_apt_failed}, gh_probe=${drift_gh_probe_failed}, cleanup=${drift_cleanup_failed}, ref=${drift_ref_failed}, missing=${missing_fn_failed}, keyring=${drift_keyring_failed}, empty_default=${drift_empty_default_failed}, quoted_hash=${drift_quoted_hash_failed}, repo_list=${drift_repo_list_failed}, blank_rc=${blank_line_rc})"
+  fi
+
+  # 8.7 LIMA_HOME の一時ディレクトリ隔離と終了時クリーンアップの検証
+  log_test "${suite}: isolates LIMA_HOME from host ~/.lima and cleans up temporary directory on exit"
+  local repo_lima="${test_dir}/repo_lima"
+  setup_repo_copy "${repo_lima}"
+  local fake_home="${test_dir}/fake_home"
+  local caller_lima_home="${test_dir}/caller_lima_home"
+  mkdir -p "${fake_home}/.lima/_config" "${caller_lima_home}"
+  printf 'mounts:\n  - location: "~"\n' > "${fake_home}/.lima/_config/override.yaml"
+  printf 'keep\n' > "${caller_lima_home}/sentinel"
+  chmod 000 "${fake_home}/.lima"
+
+  local lima_env_log="${test_dir}/lima_env.log"
+  local lima_ok_rc=0
+  HOME="${fake_home}" LIMA_HOME="${caller_lima_home}" STUB_LIMACTL_ENV_LOG="${lima_env_log}" LINT_REPO_ROOT="${repo_lima}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" >/dev/null 2>&1 || lima_ok_rc=$?
+  chmod 700 "${fake_home}/.lima"
+
+  local used_lima_home="" used_lima_count=0 lima_dir_missing_in_log=0
+  if [ -f "${lima_env_log}" ]; then
+    used_lima_home=$(sed -n 's/^LIMA_HOME=\(.*\) (dir_exists=1)$/\1/p' "${lima_env_log}" | sort -u)
+    used_lima_count=$(printf '%s\n' "${used_lima_home}" | awk 'NF { c++ } END { print c + 0 }')
+    if grep -q '(dir_exists=0)' "${lima_env_log}"; then
+      lima_dir_missing_in_log=1
+    fi
+  fi
+
+  touch "${repo_lima}/scripts/unlisted.sh"
+  local lima_fail_log="${test_dir}/lima_fail_env.log"
+  local lima_fail_rc=0
+  HOME="${fake_home}" LIMA_HOME="${caller_lima_home}" STUB_LIMACTL_ENV_LOG="${lima_fail_log}" LINT_REPO_ROOT="${repo_lima}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" >/dev/null 2>&1 || lima_fail_rc=$?
+  local used_fail_lima_home=""
+  if [ -f "${lima_fail_log}" ]; then
+    used_fail_lima_home=$(sed -n 's/^LIMA_HOME=\(.*\) (dir_exists=1)$/\1/p' "${lima_fail_log}" | sort -u | head -n 1)
+  fi
+
+  if [ "${lima_ok_rc}" -eq 0 ] && [ "${lima_dir_missing_in_log}" -eq 0 ] && \
+     [ "${used_lima_count}" -eq 1 ] && [ -n "${used_lima_home}" ] && \
+     [ "${used_lima_home}" != "${caller_lima_home}" ] && [ "${used_lima_home}" != "${fake_home}/.lima" ] && \
+     [ ! -e "${used_lima_home}" ] && [ -f "${caller_lima_home}/sentinel" ] && \
+     [ "${lima_fail_rc}" -ne 0 ] && [ -n "${used_fail_lima_home}" ] && \
+     [ "${used_fail_lima_home}" != "${caller_lima_home}" ] && [ ! -e "${used_fail_lima_home}" ]; then
+    log_pass "${suite}: isolates LIMA_HOME from host ~/.lima and cleans up temporary directory on exit"
+  else
+    log_fail "${suite}: failed LIMA_HOME isolation/cleanup check (ok_rc=${lima_ok_rc}, count=${used_lima_count}, used=${used_lima_home}, missing_in_log=${lima_dir_missing_in_log}, fail_rc=${lima_fail_rc}, used_fail=${used_fail_lima_home})"
+  fi
+
+  # 8.8 GitHub Actions ワークフロー・アクションの run: ブロック内 ${{ ... }} 直接展開検査
+  log_test "${suite}: detects direct GitHub expressions in workflow/action run blocks"
+  local repo_wf="${test_dir}/repo_wf"
+
+  # 8.8a 複数行 run: | ブロック内の直接展開
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - name: Bad block expr
+        run: |
+          echo "${{ github.event_name }}"
+EOF
+  local wf_block_err="${test_dir}/wf_block.stderr"
+  local wf_block_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_block_err}" || wf_block_failed=1
+
+  # 8.8b 複数行 run: | 内のコメント行にある直接展開（GitHub Actions はコメント内も展開するため検知必須）
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - name: Bad block comment expr
+        run: |
+          # ${{ github.event_name }}
+          echo ok
+EOF
+  local wf_comment_err="${test_dir}/wf_comment.stderr"
+  local wf_comment_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_comment_err}" || wf_comment_failed=1
+
+  # 8.8c 単一行 - run:（action.yml など）の直接展開
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/actions/install-lima/action.yml" << 'EOF'
+    - run: echo "${{ inputs.version }}"
+EOF
+  local wf_single_err="${test_dir}/wf_single.stderr"
+  local wf_single_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_single_err}" || wf_single_failed=1
+
+  # 8.8d 複数行フロー値の run: 内の直接展開
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - name: Bad flow expr
+        run: echo
+          "${{ github.event_name }}"
+EOF
+  local wf_flow_err="${test_dir}/wf_flow.stderr"
+  local wf_flow_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_flow_err}" || wf_flow_failed=1
+
+  # 8.8e env: / with: / outputs: / description: | / 複数行 name / 安全なエイリアスでの使用や非実行例は誤検知しないこと
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - name: Valid single run ${{ github.event_name }}
+        run: echo ok # ${{ comment_outside_scalar }}
+        env:
+          EV: ${{ github.event_name }}
+          SAFE_CMD: &safe_cmd 'echo "hello"'
+          SAFE_KEY: &sk >-
+            name
+      - *sk: Safe step name ${{ github.event_name }}
+        run: *safe_cmd
+      - name: Valid block run
+        run: |
+          echo ok
+        env:
+          EV2: ${{ github.event.before }}
+      - name: "Multi-line step name
+          run: echo ${{ github.event_name }}"
+        uses: example/action@v1
+        with:
+          run: ${{ github.event_name }}
+EOF
+  awk '
+    /^runs:/ {
+      print "  example:"
+      print "    description:"
+      print "      |"
+      print "      Example:"
+      print "        run: echo \"${{ inputs.version }}\""
+    }
+    { print }
+  ' "${repo_wf}/.github/actions/install-lima/action.yml" > "${repo_wf}/.github/actions/install-lima/action.yml.tmp"
+  mv "${repo_wf}/.github/actions/install-lima/action.yml.tmp" "${repo_wf}/.github/actions/install-lima/action.yml"
+  local wf_ok_rc=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" >/dev/null 2>&1 || wf_ok_rc=$?
+
+  # 8.8f 必須ワークフロー .github/workflows/ci.yml の欠落を検出すること
+  setup_repo_copy "${repo_wf}"
+  rm -f "${repo_wf}/.github/workflows/ci.yml"
+  local wf_missing_err="${test_dir}/wf_missing.stderr"
+  local wf_missing_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_missing_err}" || wf_missing_failed=1
+
+  # 8.8g 複数行の引用符付き run スカラー（2行目が # で始まる行を含む）を検出すること
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - name: Bad multiline double-quoted run
+        run: "echo start
+          # ${{ github.event_name }}"
+EOF
+  local wf_mq_dq_err="${test_dir}/wf_mq_dq.stderr"
+  local wf_mq_dq_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_mq_dq_err}" || wf_mq_dq_failed=1
+
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - name: Bad multiline single-quoted run
+        run: 'echo start
+          # ${{ github.event_name }}'
+EOF
+  local wf_mq_sq_err="${test_dir}/wf_mq_sq.stderr"
+  local wf_mq_sq_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_mq_sq_err}" || wf_mq_sq_failed=1
+
+  # 8.8h 引用符付き run キー・タブ区切り・フロースタイルステップの検出
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - "run": echo "${{ github.event_name }}"
+EOF
+  local wf_qkey_dq_err="${test_dir}/wf_qkey_dq.stderr"
+  local wf_qkey_dq_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_qkey_dq_err}" || wf_qkey_dq_failed=1
+
+  setup_repo_copy "${repo_wf}"
+  # shellcheck disable=SC2016
+  printf '    - '\''run'\'':\techo "${{ inputs.version }}"\n' >> "${repo_wf}/.github/actions/install-lima/action.yml"
+  local wf_qkey_tab_err="${test_dir}/wf_qkey_tab.stderr"
+  local wf_qkey_tab_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_qkey_tab_err}" || wf_qkey_tab_failed=1
+
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - { name: Bad flow step, run: "echo ${{ github.event_name }}" }
+EOF
+  local wf_flow_map_err="${test_dir}/wf_flow_map.stderr"
+  local wf_flow_map_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_flow_map_err}" || wf_flow_map_failed=1
+
+  # 8.8i run: の値が次行から始まる引用符スカラー・ブロックスカラーを検出すること
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - name: Bad nextline double-quoted run
+        run:
+          "echo start
+          # ${{ github.event_name }}"
+EOF
+  local wf_next_dq_err="${test_dir}/wf_next_dq.stderr"
+  local wf_next_dq_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_next_dq_err}" || wf_next_dq_failed=1
+
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - name: Bad nextline block run
+        run:
+          |
+          # ${{ github.event_name }}
+EOF
+  local wf_next_block_err="${test_dir}/wf_next_block.stderr"
+  local wf_next_block_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_next_block_err}" || wf_next_block_failed=1
+
+  # 8.8j YAML アンカー・エイリアス（スカラーおよびステップマッピング）経由の式展開を検出すること
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - run: echo ok
+        env:
+          COMMAND: &command 'echo "${{ github.event_name }}"'
+      - run: *command
+EOF
+  local wf_alias_scalar_err="${test_dir}/wf_alias_scalar.stderr"
+  local wf_alias_scalar_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_alias_scalar_err}" || wf_alias_scalar_failed=1
+
+  setup_repo_copy "${repo_wf}"
+  awk '
+    /^jobs:/ {
+      print "x-bad-step: &bad_step"
+      print "  run: echo \"${{ github.event_name }}\""
+    }
+    { print }
+  ' "${repo_wf}/.github/workflows/ci.yml" > "${repo_wf}/.github/workflows/ci.yml.tmp"
+  mv "${repo_wf}/.github/workflows/ci.yml.tmp" "${repo_wf}/.github/workflows/ci.yml"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - *bad_step
+EOF
+  local wf_alias_step_err="${test_dir}/wf_alias_step.stderr"
+  local wf_alias_step_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_alias_step_err}" || wf_alias_step_failed=1
+
+  # 8.8k ブロックスカラー・複数行引用符スカラーの完成値によるキーエイリアス *k 経由の検出
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - name: Key alias block scalar setup
+        run: echo ok
+        env:
+          KEY: &k >-
+            run
+      - *k: echo "${{ github.event_name }}"
+EOF
+  local wf_key_alias_block_err="${test_dir}/wf_key_alias_block.stderr"
+  local wf_key_alias_block_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_key_alias_block_err}" || wf_key_alias_block_failed=1
+
+  setup_repo_copy "${repo_wf}"
+  cat >> "${repo_wf}/.github/workflows/ci.yml" << 'EOF'
+
+      - name: Key alias dq setup
+        run: echo ok
+        env:
+          KEY: &kdq "\
+            r\
+            un"
+      - *kdq: echo "${{ github.event_name }}"
+EOF
+  local wf_key_alias_dq_err="${test_dir}/wf_key_alias_dq.stderr"
+  local wf_key_alias_dq_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_key_alias_dq_err}" || wf_key_alias_dq_failed=1
+
+  # 8.8l 深い階層のローカル composite action (.github/actions/group/nested/action.yml) の検査
+  setup_repo_copy "${repo_wf}"
+  mkdir -p "${repo_wf}/.github/actions/group/nested"
+  cat > "${repo_wf}/.github/actions/group/nested/action.yml" << 'EOF'
+name: Nested
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: echo "${{ inputs.version }}"
+EOF
+  local wf_nested_action_err="${test_dir}/wf_nested_action.stderr"
+  local wf_nested_action_failed=0
+  LINT_REPO_ROOT="${repo_wf}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${wf_nested_action_err}" || wf_nested_action_failed=1
+
+  # shellcheck disable=SC2016
+  if [ "${wf_block_failed}" -eq 1 ] && grep -Fq ".github/workflows/ci.yml:" "${wf_block_err}" && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_block_err}" && \
+     [ "${wf_comment_failed}" -eq 1 ] && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_comment_err}" && \
+     [ "${wf_single_failed}" -eq 1 ] && grep -Fq ".github/actions/install-lima/action.yml:" "${wf_single_err}" && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_single_err}" && \
+     [ "${wf_flow_failed}" -eq 1 ] && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_flow_err}" && \
+     [ "${wf_ok_rc}" -eq 0 ] && \
+     [ "${wf_missing_failed}" -eq 1 ] && grep -Fq "missing required workflow file '.github/workflows/ci.yml'" "${wf_missing_err}" && \
+     [ "${wf_mq_dq_failed}" -eq 1 ] && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_mq_dq_err}" && \
+     [ "${wf_mq_sq_failed}" -eq 1 ] && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_mq_sq_err}" && \
+     [ "${wf_qkey_dq_failed}" -eq 1 ] && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_qkey_dq_err}" && \
+     [ "${wf_qkey_tab_failed}" -eq 1 ] && grep -Fq ".github/actions/install-lima/action.yml:" "${wf_qkey_tab_err}" && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_qkey_tab_err}" && \
+     [ "${wf_flow_map_failed}" -eq 1 ] && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_flow_map_err}" && \
+     [ "${wf_next_dq_failed}" -eq 1 ] && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_next_dq_err}" && \
+     [ "${wf_next_block_failed}" -eq 1 ] && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_next_block_err}" && \
+     [ "${wf_alias_scalar_failed}" -eq 1 ] && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_alias_scalar_err}" && \
+     [ "${wf_alias_step_failed}" -eq 1 ] && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_alias_step_err}" && \
+     [ "${wf_key_alias_block_failed}" -eq 1 ] && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_key_alias_block_err}" && \
+     [ "${wf_key_alias_dq_failed}" -eq 1 ] && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_key_alias_dq_err}" && \
+     [ "${wf_nested_action_failed}" -eq 1 ] && grep -Fq ".github/actions/group/nested/action.yml:" "${wf_nested_action_err}" && grep -Fq 'direct ${{ ... }} expression in '\''run:'\'' block' "${wf_nested_action_err}"; then
+    log_pass "${suite}: detects direct GitHub expressions in workflow/action run blocks"
+  else
+    log_fail "${suite}: failed workflow run expression checks (block=${wf_block_failed}, comment=${wf_comment_failed}, single=${wf_single_failed}, flow=${wf_flow_failed}, ok_rc=${wf_ok_rc}, missing=${wf_missing_failed}, mq_dq=${wf_mq_dq_failed}, mq_sq=${wf_mq_sq_failed}, qkey_dq=${wf_qkey_dq_failed}, qkey_tab=${wf_qkey_tab_failed}, flow_map=${wf_flow_map_failed}, next_dq=${wf_next_dq_failed}, next_block=${wf_next_block_failed}, alias_scalar=${wf_alias_scalar_failed}, alias_step=${wf_alias_step_failed}, key_alias_block=${wf_key_alias_block_failed}, key_alias_dq=${wf_key_alias_dq_failed}, nested_action=${wf_nested_action_failed})"
+  fi
+
+  # 8.8m ci.yml の変更検知 pattern が対象ファイル完全一致とディレクトリ前方一致のみを判定すること
+  log_test "${suite}: ci.yml change detection pattern matches exact files and directory prefixes only"
+  local ci_pattern
+  ci_pattern=$(sed -n "s/^[[:space:]]*pattern='\\(.*\\)'$/\\1/p" "${REPO_ROOT}/.github/workflows/ci.yml")
+  local pat_ok=1
+  local p_hit p_miss
+  for p_hit in coding-sandbox.yaml Makefile .github/workflows/ci.yml provision/apt-packages.sh scripts/lint.sh .github/actions/install-lima/action.yml .github/actions/group/nested/action.yml; do
+    if ! printf '%s\n' "${p_hit}" | grep -Eq "${ci_pattern}"; then
+      pat_ok=0
+    fi
+  done
+  for p_miss in Makefile.local Makefile.md coding-sandbox.yaml.bak .github/workflows/other.yml README.md docs/security.md; do
+    if printf '%s\n' "${p_miss}" | grep -Eq "${ci_pattern}"; then
+      pat_ok=0
+    fi
+  done
+  if [ -n "${ci_pattern}" ] && [ "${pat_ok}" -eq 1 ]; then
+    log_pass "${suite}: ci.yml change detection pattern matches exact files and directory prefixes only"
+  else
+    log_fail "${suite}: ci.yml change detection pattern mismatch (pattern=${ci_pattern}, pat_ok=${pat_ok})"
   fi
 }

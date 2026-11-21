@@ -58,26 +58,29 @@ jobs:
 
       - id: check
         name: Check relevant file changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           # 定期実行 (schedule) または手動実行 (workflow_dispatch) は常に実 VM テストを実行
-          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${EVENT_NAME}" = "schedule" ] || [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
             echo "run_vm=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          pattern='^(coding-sandbox\.yaml|provision/|scripts/|\.github/workflows/ci\.yml|\.github/actions/)'
+          pattern='^((coding-sandbox\.yaml|Makefile|\.github/workflows/ci\.yml)$|(provision|scripts|\.github/actions)/)'
           changed=""
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            if git fetch origin "${{ github.event.pull_request.base.sha }}" --depth=1; then
-              changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD | grep -E "$pattern" || true)
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            if [[ "${PR_BASE_SHA}" =~ ^[0-9a-fA-F]{40}$ ]] && git fetch origin "${PR_BASE_SHA}" --depth=1; then
+              changed=$(git diff --name-only "${PR_BASE_SHA}" HEAD | grep -E "${pattern}" || true)
             else
               changed="coding-sandbox.yaml"
             fi
           else
             # push
-            before="${{ github.event.before }}"
-            if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ] && git fetch origin "$before" --depth=1; then
-              changed=$(git diff --name-only "$before" HEAD 2>/dev/null | grep -E "$pattern" || true)
+            if [[ "${PUSH_BEFORE_SHA}" =~ ^[0-9a-fA-F]{40}$ ]] && [ "${PUSH_BEFORE_SHA}" != "0000000000000000000000000000000000000000" ] && git fetch origin "${PUSH_BEFORE_SHA}" --depth=1; then
+              changed=$(git diff --name-only "${PUSH_BEFORE_SHA}" HEAD 2>/dev/null | grep -E "${pattern}" || true)
             else
               changed="coding-sandbox.yaml"
             fi
