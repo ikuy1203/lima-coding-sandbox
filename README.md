@@ -29,7 +29,7 @@
 | ターミナル（terminfo）の代替設定 | - | `provision/terminfo-fallback.sh`（root） | `/etc/profile.d/terminfo-fallback.sh`（[後述](#シェルに入る)） |
 | 音声（alsa-utils, mpg123） | Ubuntu のリポジトリ（apt） | `provision/apt-packages.sh`（インストール）、`provision/audio.sh`（udev ルール設定）（root） | apt パッケージ、`/etc/udev/rules.d/70-lima-coding-sandbox-sound.rules` |
 | Git 設定・コミット署名 | - | `provision/git-config.sh` | `~/.ssh/id_ed25519_signing`、`~/.gitconfig`（[後述](#git-のコミット署名)） |
-| herdr | [Install](https://herdr.dev/docs/install/) | `provision/herdr.sh` | `~/.local/bin/herdr`（[後述](#herdr)） |
+| herdr | [Install](https://herdr.dev/docs/install/) | `provision/herdr.sh` | `~/.local/bin/herdr`、`~/.config/herdr/config.toml`（ペインでログインシェルを起動する設定。[後述](#herdr)） |
 | Antigravity CLI | [Installation and auth](https://antigravity.google/docs/cli/install) | `provision/antigravity-cli.sh` | `~/.local/bin/agy` |
 | GitHub Copilot CLI | [Installing GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)（install スクリプト） | `provision/copilot-cli.sh` | `~/.local/bin/copilot` |
 | mise | [Installing mise](https://mise.jdx.dev/installing-mise.html)（`https://mise.run`） | `provision/mise.sh` | `~/.local/bin/mise`、`~/.profile`（shims を PATH に追加する行を追記。[後述](#mise)） |
@@ -401,6 +401,10 @@ herdr のセッションが起動します（既にあれば接続します）�
    ```sh
    herdr machine add lima-coding-sandbox
    ```
+
+> [!NOTE]
+> - `provision/herdr.sh` で VM の `~/.config/herdr/config.toml` に `[terminal]` / `shell_mode = "login"` を設定しています。Linux 版の `herdr` は既定（`shell_mode = "auto"`）では非ログインシェルを起動するため、この設定により `make herdr-remote` や `herdr machine add` 経由のリモート接続でも `~/.profile`（`mise` shims や `~/.local/bin`）および `/etc/profile.d/*` が読み込まれます。なお、既に自分で `shell_mode` を明示設定している場合（`shell_mode = "auto"` を明示している場合も含む）は上書きしないため、その場合は手動で `shell_mode = "login"` に変更してください。
+> - 古い版のテンプレートで作成した VM に反映する場合は、[インスタンスを作り直す](#インスタンスを作り直す認証情報と作業データの退避復元)（`make recreate`）を実行してください。VM を作り直さずに今の環境に反映する場合は、VM 内の `~/.config/herdr/config.toml` の `[terminal]` セクションに `shell_mode = "login"` を設定（`[terminal]` セクションがまだ無ければ見出しごと追記、既にあればそのセクション内に追記）してから `herdr server reload-config`（またはホストで `make restart`）を実行してください（`reload-config` は実行後に**新しく開くペイン**から有効になります）。
 
 ### 通知音
 

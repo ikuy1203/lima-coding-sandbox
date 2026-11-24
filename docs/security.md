@@ -54,7 +54,7 @@
 このとき `limactl start` は次の表示から先に進まず、タイムアウト（既定は 10 分）後にエラー（終了コード 1）で終了します。
 
 ```text
-Waiting for the optional requirement 1 of 9: `no host directories to be mounted`
+Waiting for the optional requirement 1 of 10: `no host directories to be mounted`
 ...
 did not receive an event with the `running` status
 ```

@@ -896,4 +896,306 @@ EOF
   else
     log_fail "${suite}: verify_cli incorrectly accepted partial version match"
   fi
+
+  # 3.26 herdr.sh: ~/.config/herdr/config.toml の生成・追記・挿入・既存設定尊重・破損保護・symlink 維持
+  log_test "${suite}: herdr.sh configures shell_mode = login idempotently and preserves user settings"
+  local hc_tmp="${test_dir}/herdr_cfg_tmp"
+  mkdir -p "${hc_tmp}"
+  local hc_failures=()
+
+  # 3.26a 新規作成（0644）と 2 回目実行の冪等性（curl 再呼出なし・一時ファイル残存なし）
+  local hc_new_home="${test_dir}/hc_new_home"
+  mkdir -p "${hc_new_home}"
+  : > "${curl_log}"
+  (
+    export "${test_env[@]}"
+    export HOME="${hc_new_home}"
+    export TMPDIR="${hc_tmp}"
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  )
+  local hc_new_cfg="${hc_new_home}/.config/herdr/config.toml"
+  local hc_new_perm hc_new_markers hc_new_terms hc_new_curls hc_tmp_left
+  hc_new_perm=$(get_octal_perm "${hc_new_cfg}")
+  hc_new_markers=$(grep -c "added by lima-coding-sandbox provision/herdr.sh" "${hc_new_cfg}" || true)
+  hc_new_terms=$(grep -cx '\[terminal\]' "${hc_new_cfg}" || true)
+  hc_new_curls=$(wc -l < "${curl_log}" | tr -d ' ')
+  hc_tmp_left=$(count_dir_entries "${hc_tmp}")
+  if ! { [ -f "${hc_new_cfg}" ] && [ "${hc_new_perm}" = "644" ] && \
+         [ "${hc_new_markers}" -eq 1 ] && [ "${hc_new_terms}" -eq 1 ] && \
+         grep -qx 'shell_mode = "login"' "${hc_new_cfg}" && \
+         [ "${hc_new_curls}" -eq 1 ] && [ "${hc_tmp_left}" -eq 0 ]; }; then
+    hc_failures+=("3.26a_new")
+  fi
+
+  # 3.26b 既存正常バイナリあり + config.toml 未作成（make restart 相当）で curl なしで config.toml 作成
+  local hc_exist_home="${test_dir}/hc_exist_home"
+  mkdir -p "${hc_exist_home}/.local/bin"
+  cat > "${hc_exist_home}/.local/bin/herdr" << 'EOF'
+#!/bin/sh
+if [ "${1:-}" = "config" ] && [ "${2:-}" = "check" ]; then
+  if [ "${STUB_HERDR_CONFIG_CHECK_FAIL:-0}" = "1" ]; then
+    echo >&2 "config: issues found"
+    exit 1
+  fi
+  if [ "${STUB_HERDR_FAIL_ON_SHELL_MODE:-0}" = "1" ] && [ -n "${HERDR_CONFIG_PATH:-}" ] && grep -q 'shell_mode' "${HERDR_CONFIG_PATH}" 2>/dev/null; then
+    echo >&2 "config: issues found"
+    exit 1
+  fi
+  echo "config: ok"
+  exit 0
+fi
+echo "herdr stub 0.1.0"
+EOF
+  chmod +x "${hc_exist_home}/.local/bin/herdr"
+  : > "${curl_log}"
+  (
+    export "${test_env[@]}"
+    export HOME="${hc_exist_home}"
+    export TMPDIR="${hc_tmp}"
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  )
+  local hc_exist_curls
+  hc_exist_curls=$(wc -l < "${curl_log}" | tr -d ' ')
+  if ! { [ "${hc_exist_curls}" -eq 0 ] && grep -qx 'shell_mode = "login"' "${hc_exist_home}/.config/herdr/config.toml"; }; then
+    hc_failures+=("3.26b_existing_bin")
+  fi
+
+  # 3.26c [terminal] なしの既存ファイル（末尾改行なし）への追記と 2 回目実行の冪等性
+  local hc_append_home="${test_dir}/hc_append_home"
+  mkdir -p "${hc_append_home}/.config/herdr" "${hc_append_home}/.local/bin"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_append_home}/.local/bin/herdr"
+  printf 'onboarding = false\n\n[theme]\nname = "nord"' > "${hc_append_home}/.config/herdr/config.toml"
+  (
+    export "${test_env[@]}"
+    export HOME="${hc_append_home}"
+    export TMPDIR="${hc_tmp}"
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  )
+  local hc_append_terms hc_append_modes
+  hc_append_terms=$(grep -cx '\[terminal\]' "${hc_append_home}/.config/herdr/config.toml" || true)
+  hc_append_modes=$(grep -cx 'shell_mode = "login"' "${hc_append_home}/.config/herdr/config.toml" || true)
+  if ! { grep -qx 'name = "nord"' "${hc_append_home}/.config/herdr/config.toml" && \
+         [ "${hc_append_terms}" -eq 1 ] && [ "${hc_append_modes}" -eq 1 ]; }; then
+    hc_failures+=("3.26c_append_idempotent")
+  fi
+
+  # 3.26d 既存の [terminal] セクション（コメントアウト含む）への重複なし挿入
+  local hc_insert_home="${test_dir}/hc_insert_home"
+  mkdir -p "${hc_insert_home}/.local/bin" "${hc_insert_home}/.config/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_insert_home}/.local/bin/herdr"
+  cat > "${hc_insert_home}/.config/herdr/config.toml" << 'EOF'
+[terminal]
+# shell_mode = "auto"
+default_shell = ""
+EOF
+  (
+    export "${test_env[@]}"
+    export HOME="${hc_insert_home}"
+    export TMPDIR="${hc_tmp}"
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  )
+  local hc_insert_terms hc_insert_modes
+  hc_insert_terms=$(grep -cx '\[terminal\]' "${hc_insert_home}/.config/herdr/config.toml" || true)
+  hc_insert_modes=$(grep -cx 'shell_mode = "login"' "${hc_insert_home}/.config/herdr/config.toml" || true)
+  if ! { [ "${hc_insert_terms}" -eq 1 ] && [ "${hc_insert_modes}" -eq 1 ] && \
+         grep -qx 'default_shell = ""' "${hc_insert_home}/.config/herdr/config.toml"; }; then
+    hc_failures+=("3.26d_insert")
+  fi
+
+  # 3.26e 利用者が明示設定した shell_mode = "non_login" および terminal.shell_mode = "auto" を上書きしない
+  local hc_keep_sec_home="${test_dir}/hc_keep_sec_home"
+  mkdir -p "${hc_keep_sec_home}/.local/bin" "${hc_keep_sec_home}/.config/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_keep_sec_home}/.local/bin/herdr"
+  cat > "${hc_keep_sec_home}/.config/herdr/config.toml" << 'EOF'
+[terminal]
+shell_mode = "non_login"
+EOF
+  local hc_keep_dot_home="${test_dir}/hc_keep_dot_home"
+  mkdir -p "${hc_keep_dot_home}/.local/bin" "${hc_keep_dot_home}/.config/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_keep_dot_home}/.local/bin/herdr"
+  printf 'terminal.shell_mode = "auto"\n' > "${hc_keep_dot_home}/.config/herdr/config.toml"
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${hc_tmp}"
+    HOME="${hc_keep_sec_home}" bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+    HOME="${hc_keep_dot_home}" bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  )
+  if ! { grep -qx 'shell_mode = "non_login"' "${hc_keep_sec_home}/.config/herdr/config.toml" && \
+         ! grep -q 'shell_mode = "login"' "${hc_keep_sec_home}/.config/herdr/config.toml" && \
+         [ "$(cat "${hc_keep_dot_home}/.config/herdr/config.toml")" = 'terminal.shell_mode = "auto"' ]; }; then
+    hc_failures+=("3.26e_preserve_user")
+  fi
+
+  # 3.26f インラインテーブル / ドット記法 / config check 失敗ファイルを警告付きで保護（不変）
+  local hc_inline_home="${test_dir}/hc_inline_home"
+  local hc_dotted_home="${test_dir}/hc_dotted_home"
+  local hc_broken_cfg_home="${test_dir}/hc_broken_cfg_home"
+  mkdir -p "${hc_inline_home}/.local/bin" "${hc_inline_home}/.config/herdr"
+  mkdir -p "${hc_dotted_home}/.local/bin" "${hc_dotted_home}/.config/herdr"
+  mkdir -p "${hc_broken_cfg_home}/.local/bin" "${hc_broken_cfg_home}/.config/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_inline_home}/.local/bin/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_dotted_home}/.local/bin/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_broken_cfg_home}/.local/bin/herdr"
+  printf 'terminal = { new_cwd = "home" }\n' > "${hc_inline_home}/.config/herdr/config.toml"
+  printf 'terminal.new_cwd = "home"\n' > "${hc_dotted_home}/.config/herdr/config.toml"
+  printf 'invalid = [\n' > "${hc_broken_cfg_home}/.config/herdr/config.toml"
+  local hc_inline_err="${test_dir}/hc_inline.stderr"
+  local hc_broken_err="${test_dir}/hc_broken.stderr"
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${hc_tmp}"
+    HOME="${hc_inline_home}" bash "${REPO_ROOT}/provision/herdr.sh" 2>"${hc_inline_err}"
+    HOME="${hc_dotted_home}" bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+    STUB_HERDR_CONFIG_CHECK_FAIL=1 HOME="${hc_broken_cfg_home}" bash "${REPO_ROOT}/provision/herdr.sh" 2>"${hc_broken_err}"
+  )
+  if ! { [ "$(cat "${hc_inline_home}/.config/herdr/config.toml")" = 'terminal = { new_cwd = "home" }' ] && \
+         grep -q "skipping automatic configuration" "${hc_inline_err}" && \
+         [ "$(cat "${hc_dotted_home}/.config/herdr/config.toml")" = 'terminal.new_cwd = "home"' ] && \
+         [ "$(cat "${hc_broken_cfg_home}/.config/herdr/config.toml")" = 'invalid = [' ] && \
+         grep -q "failed 'herdr config check'" "${hc_broken_err}"; }; then
+    hc_failures+=("3.26f_protect_special_and_broken")
+  fi
+
+  # 3.26g 通常 symlink および dangling symlink（参照先の親ディレクトリ未作成含む）でリンクを維持して作成・更新
+  local hc_link_home="${test_dir}/hc_link_home"
+  local hc_link_target="${test_dir}/hc_link_target.toml"
+  mkdir -p "${hc_link_home}/.local/bin" "${hc_link_home}/.config/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_link_home}/.local/bin/herdr"
+  printf 'onboarding = false\n' > "${hc_link_target}"
+  ln -s "${hc_link_target}" "${hc_link_home}/.config/herdr/config.toml"
+  (
+    export "${test_env[@]}"
+    export HOME="${hc_link_home}"
+    export TMPDIR="${hc_tmp}"
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  )
+  local hc_dangling_home="${test_dir}/hc_dangling_home"
+  local hc_dangling_target="${test_dir}/hc_dangling_dir/sub/config.toml"
+  mkdir -p "${hc_dangling_home}/.local/bin" "${hc_dangling_home}/.config/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_dangling_home}/.local/bin/herdr"
+  ln -s "${hc_dangling_target}" "${hc_dangling_home}/.config/herdr/config.toml"
+  (
+    export "${test_env[@]}"
+    export HOME="${hc_dangling_home}"
+    export TMPDIR="${hc_tmp}"
+    bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  )
+  if ! { [ -L "${hc_link_home}/.config/herdr/config.toml" ] && \
+         grep -qx 'onboarding = false' "${hc_link_target}" && \
+         grep -qx 'shell_mode = "login"' "${hc_link_target}" && \
+         [ -L "${hc_dangling_home}/.config/herdr/config.toml" ] && \
+         [ -f "${hc_dangling_target}" ] && \
+         grep -qx 'shell_mode = "login"' "${hc_dangling_target}"; }; then
+    hc_failures+=("3.26g_symlinks")
+  fi
+
+  # 3.26h 複数行配列・複数行文字列・[terminal.env] サブテーブルの誤認防止
+  local hc_mlarr_term_home="${test_dir}/hc_mlarr_term_home"
+  mkdir -p "${hc_mlarr_term_home}/.local/bin" "${hc_mlarr_term_home}/.config/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_mlarr_term_home}/.local/bin/herdr"
+  cat > "${hc_mlarr_term_home}/.config/herdr/config.toml" << 'EOF'
+[terminal]
+rows = [
+  ["terminal"],
+  [1, 2],
+]
+shell_mode = "auto"
+EOF
+  local hc_mlarr_root_home="${test_dir}/hc_mlarr_root_home"
+  mkdir -p "${hc_mlarr_root_home}/.local/bin" "${hc_mlarr_root_home}/.config/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_mlarr_root_home}/.local/bin/herdr"
+  cat > "${hc_mlarr_root_home}/.config/herdr/config.toml" << 'EOF'
+[ui.sidebar.agents]
+rows = [
+  ["terminal"],
+  ["agent"],
+]
+EOF
+  local hc_mlstr_home="${test_dir}/hc_mlstr_home"
+  mkdir -p "${hc_mlstr_home}/.local/bin" "${hc_mlstr_home}/.config/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_mlstr_home}/.local/bin/herdr"
+  cat > "${hc_mlstr_home}/.config/herdr/config.toml" << 'EOF'
+[ui]
+window_title = """
+[terminal]
+shell_mode = "non_login"
+"""
+EOF
+  local hc_subtbl_home="${test_dir}/hc_subtbl_home"
+  mkdir -p "${hc_subtbl_home}/.local/bin" "${hc_subtbl_home}/.config/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_subtbl_home}/.local/bin/herdr"
+  cat > "${hc_subtbl_home}/.config/herdr/config.toml" << 'EOF'
+[terminal.env]
+FOO = "bar"
+EOF
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${hc_tmp}"
+    HOME="${hc_mlarr_term_home}" bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+    HOME="${hc_mlarr_root_home}" bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+    HOME="${hc_mlstr_home}" bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+    HOME="${hc_subtbl_home}" bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  )
+  if ! { grep -qx 'shell_mode = "auto"' "${hc_mlarr_term_home}/.config/herdr/config.toml" && \
+         ! grep -q 'shell_mode = "login"' "${hc_mlarr_term_home}/.config/herdr/config.toml" && \
+         [ "$(grep -cx '\[terminal\]' "${hc_mlarr_root_home}/.config/herdr/config.toml" || true)" -eq 1 ] && \
+         grep -qx 'shell_mode = "login"' "${hc_mlarr_root_home}/.config/herdr/config.toml" && \
+         [ "$(grep -cx '\[terminal\]' "${hc_mlstr_home}/.config/herdr/config.toml" || true)" -eq 2 ] && \
+         grep -qx 'shell_mode = "login"' "${hc_mlstr_home}/.config/herdr/config.toml" && \
+         [ "$(grep -cx '\[terminal\]' "${hc_subtbl_home}/.config/herdr/config.toml" || true)" -eq 1 ] && \
+         grep -qx 'shell_mode = "login"' "${hc_subtbl_home}/.config/herdr/config.toml"; }; then
+    hc_failures+=("3.26h_nested_and_subtable")
+  fi
+
+  # 3.26i CRLF 改行コードの維持（挿入・追記とも混在しないこと）
+  local hc_crlf_ins_home="${test_dir}/hc_crlf_ins_home"
+  local hc_crlf_app_home="${test_dir}/hc_crlf_app_home"
+  mkdir -p "${hc_crlf_ins_home}/.local/bin" "${hc_crlf_ins_home}/.config/herdr"
+  mkdir -p "${hc_crlf_app_home}/.local/bin" "${hc_crlf_app_home}/.config/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_crlf_ins_home}/.local/bin/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_crlf_app_home}/.local/bin/herdr"
+  printf '[terminal]\r\ndefault_shell = ""\r\n' > "${hc_crlf_ins_home}/.config/herdr/config.toml"
+  printf '[theme]\r\nname = "nord"\r\n' > "${hc_crlf_app_home}/.config/herdr/config.toml"
+  (
+    export "${test_env[@]}"
+    export TMPDIR="${hc_tmp}"
+    HOME="${hc_crlf_ins_home}" bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+    HOME="${hc_crlf_app_home}" bash "${REPO_ROOT}/provision/herdr.sh" >/dev/null 2>&1
+  )
+  local crlf_ins_non_cr crlf_app_non_cr
+  crlf_ins_non_cr=$(awk '!/\r$/ { c++ } END { print c+0 }' "${hc_crlf_ins_home}/.config/herdr/config.toml")
+  crlf_app_non_cr=$(awk '!/\r$/ { c++ } END { print c+0 }' "${hc_crlf_app_home}/.config/herdr/config.toml")
+  if ! { [ "${crlf_ins_non_cr}" -eq 0 ] && [ "${crlf_app_non_cr}" -eq 0 ] && \
+         grep -q 'shell_mode = "login"' "${hc_crlf_ins_home}/.config/herdr/config.toml" && \
+         grep -q 'shell_mode = "login"' "${hc_crlf_app_home}/.config/herdr/config.toml"; }; then
+    hc_failures+=("3.26i_crlf")
+  fi
+
+  # 3.26j 更新後の config check のみが失敗した場合に非ゼロ終了しつつ既存ファイルを変更しないこと
+  local hc_post_fail_home="${test_dir}/hc_post_fail_home"
+  mkdir -p "${hc_post_fail_home}/.local/bin" "${hc_post_fail_home}/.config/herdr"
+  cp "${hc_exist_home}/.local/bin/herdr" "${hc_post_fail_home}/.local/bin/herdr"
+  printf 'onboarding = false\n' > "${hc_post_fail_home}/.config/herdr/config.toml"
+  local hc_post_fail_rc=0 hc_post_fail_err="${test_dir}/hc_post_fail.stderr"
+  (
+    export "${test_env[@]}"
+    export HOME="${hc_post_fail_home}"
+    export TMPDIR="${hc_tmp}"
+    export STUB_HERDR_FAIL_ON_SHELL_MODE=1
+    bash "${REPO_ROOT}/provision/herdr.sh" 2>"${hc_post_fail_err}"
+  ) || hc_post_fail_rc=$?
+  if ! { [ "${hc_post_fail_rc}" -ne 0 ] && \
+         [ "$(cat "${hc_post_fail_home}/.config/herdr/config.toml")" = 'onboarding = false' ] && \
+         grep -q "updated herdr config failed 'herdr config check'" "${hc_post_fail_err}"; }; then
+    hc_failures+=("3.26j_post_check_fail")
+  fi
+
+  if [ "${#hc_failures[@]}" -eq 0 ]; then
+    log_pass "${suite}: herdr.sh configures shell_mode = login idempotently and preserves user settings"
+  else
+    log_fail "${suite}: herdr.sh config.toml management failed (${hc_failures[*]})"
+  fi
 }

@@ -708,6 +708,21 @@ else
   fi
 fi
 
+if ! herdr_cfg_ref_body=$(extract_sh_function_body "inspect_herdr_config" "provision/herdr.sh"); then
+  lint_err "could not extract function 'inspect_herdr_config()' from provision/herdr.sh"
+else
+  herdr_probe_idx=$(find_probe_index "${template}" "herdr login shell" || printf '?')
+  herdr_probe_script=$(extract_probe_script "${template}" "herdr login shell")
+  if [ -z "${herdr_probe_script}" ] || ! herdr_cfg_probe_body=$(extract_sh_function_body "inspect_herdr_config" <<< "${herdr_probe_script}"); then
+    lint_err "could not extract function 'inspect_herdr_config()' from herdr login shell probe in ${template}"
+  else
+    compare_function_bodies \
+      "provision/herdr.sh:inspect_herdr_config()" "${herdr_cfg_ref_body}" \
+      "${template} (probes[${herdr_probe_idx}]):inspect_herdr_config()" "${herdr_cfg_probe_body}" \
+      "function 'inspect_herdr_config()' in ${template} (probes[${herdr_probe_idx}]) does not match 'inspect_herdr_config()' in provision/herdr.sh"
+  fi
+fi
+
 # GITHUB_CLI_KEYRING / GITHUB_CLI_REPO_LIST の既定値リテラルの整合性検査
 extract_env_default_literals() {
   local var_name="$1"

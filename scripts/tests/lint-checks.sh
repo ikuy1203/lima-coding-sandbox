@@ -316,6 +316,14 @@ EOF
   local drift_gh_probe_failed=0
   LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_gh_probe_err}" || drift_gh_probe_failed=1
 
+  # 8.6f2 inspect_herdr_config() の不一致（coding-sandbox.yaml herdr login shell probe）
+  setup_repo_copy "${repo_drift}"
+  awk '{ gsub(/first_terminal_line = 0/, "first_terminal_line = 1"); print }' "${repo_drift}/coding-sandbox.yaml" > "${repo_drift}/coding-sandbox.yaml.tmp"
+  mv "${repo_drift}/coding-sandbox.yaml.tmp" "${repo_drift}/coding-sandbox.yaml"
+  local drift_herdr_probe_err="${test_dir}/drift_herdr_probe.stderr"
+  local drift_herdr_probe_failed=0
+  LINT_REPO_ROOT="${repo_drift}" PATH="${fake_bin}:${PATH}" bash "${REPO_ROOT}/scripts/lint.sh" 2>"${drift_herdr_probe_err}" || drift_herdr_probe_failed=1
+
   # 8.6g cleanup() の不一致（provision/antigravity-cli.sh）および基準ファイル（provision/github-cli.sh）のドリフト・diff 出力
   setup_repo_copy "${repo_drift}"
   awk '{ gsub(/rm -f "\$\{tmp_files\[@\]\}"/, "rm -rf \"${tmp_files[@]}\""); print }' "${repo_drift}/provision/antigravity-cli.sh" > "${repo_drift}/provision/antigravity-cli.sh.tmp"
@@ -385,6 +393,7 @@ EOF
      [ "${drift_verify_failed}" -eq 1 ] && grep -q "function 'verify_cli()' in provision/copilot-cli.sh does not match" "${drift_verify_err}" && \
      [ "${drift_gh_apt_failed}" -eq 1 ] && grep -q "function 'is_official_gh_repo_configured()' in provision/apt-packages.sh does not match 'is_repo_configured()' in provision/github-cli.sh" "${drift_gh_apt_err}" && \
      [ "${drift_gh_probe_failed}" -eq 1 ] && grep -q "function 'check_gh_repo()' in coding-sandbox.yaml (probes\[1\]) does not match 'is_repo_configured()' in provision/github-cli.sh" "${drift_gh_probe_err}" && \
+     [ "${drift_herdr_probe_failed}" -eq 1 ] && grep -q "function 'inspect_herdr_config()' in coding-sandbox.yaml (probes\[.*\]) does not match 'inspect_herdr_config()' in provision/herdr.sh" "${drift_herdr_probe_err}" && \
      [ "${drift_cleanup_failed}" -eq 1 ] && grep -q "function 'cleanup()' in provision/antigravity-cli.sh does not match" "${drift_cleanup_err}" && \
      [ "${drift_ref_failed}" -eq 1 ] && [ "$(grep -c "function 'download_file()' in provision/.* does not match 'download_file()' in provision/github-cli.sh" "${drift_ref_err}")" -eq 5 ] && \
      grep -q "^--- provision/github-cli.sh:download_file()" "${drift_ref_err}" && grep -q "DOWNLOAD_CONNECT_TIMEOUT" "${drift_ref_err}" && \
@@ -398,7 +407,7 @@ EOF
      [ "${blank_line_rc}" -eq 0 ]; then
     log_pass "${suite}: detects drift in duplicated functions across provision/*.sh and coding-sandbox.yaml"
   else
-    log_fail "${suite}: failed to detect duplicated function drift (curl_rc=${drift_curl_rc_failed}, http=${drift_http_failed}, dl=${drift_dl_failed}, verify=${drift_verify_failed}, gh_apt=${drift_gh_apt_failed}, gh_probe=${drift_gh_probe_failed}, cleanup=${drift_cleanup_failed}, ref=${drift_ref_failed}, missing=${missing_fn_failed}, keyring=${drift_keyring_failed}, empty_default=${drift_empty_default_failed}, quoted_hash=${drift_quoted_hash_failed}, repo_list=${drift_repo_list_failed}, blank_rc=${blank_line_rc})"
+    log_fail "${suite}: failed to detect duplicated function drift (curl_rc=${drift_curl_rc_failed}, http=${drift_http_failed}, dl=${drift_dl_failed}, verify=${drift_verify_failed}, gh_apt=${drift_gh_apt_failed}, gh_probe=${drift_gh_probe_failed}, herdr_probe=${drift_herdr_probe_failed}, cleanup=${drift_cleanup_failed}, ref=${drift_ref_failed}, missing=${missing_fn_failed}, keyring=${drift_keyring_failed}, empty_default=${drift_empty_default_failed}, quoted_hash=${drift_quoted_hash_failed}, repo_list=${drift_repo_list_failed}, blank_rc=${blank_line_rc})"
   fi
 
   # 8.7 LIMA_HOME の一時ディレクトリ隔離と終了時クリーンアップの検証
