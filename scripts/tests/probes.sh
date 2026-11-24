@@ -62,6 +62,14 @@ EOF
     cat > "${fake_home}/.local/bin/${tool}" << EOF
 #!/bin/bash
 set -eu
+if [ "${tool}" = "herdr" ] && [ "\${1:-}" = "config" ] && [ "\${2:-}" = "check" ]; then
+  if [ "\${STUB_PROBE_HERDR_CONFIG_FAIL:-0}" = "1" ]; then
+    echo >&2 "config: issues found"
+    exit 1
+  fi
+  echo "config: ok"
+  exit 0
+fi
 if [ "\${STUB_PROBE_${tool_upper}_FAIL:-0}" = "1" ]; then
   exit 1
 fi
@@ -519,5 +527,110 @@ EOF
     log_pass "${suite}: probe CLI tools rejects invalid version parameters"
   else
     log_fail "${suite}: probe CLI tools failed to reject invalid version parameters"
+  fi
+
+  # 7.14 probe herdr login shell configuration: shell_mode 設定・スキップ対象設定で成功、不在・未設定で理由付き失敗
+  log_test "${suite}: probe herdr login shell configuration verifies config.toml and reports causes"
+  local p_herdr_script
+  p_herdr_script=$(limactl template yq "${REPO_ROOT}/coding-sandbox.yaml" '.probes[] | select(.description | test("herdr login shell")) | .script')
+
+  local ph_home="${test_dir}/probe_herdr_home"
+  mkdir -p "${ph_home}/.local/bin" "${ph_home}/.config/herdr"
+  cp "${fake_home}/.local/bin/herdr" "${ph_home}/.local/bin/herdr"
+
+  # 正常（shell_mode = "login"）
+  printf '[terminal]\nshell_mode = "login"\n' > "${ph_home}/.config/herdr/config.toml"
+  local ph_ok=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${ph_home}"
+    export PROBE_TIMEOUT=1
+    export PROBE_SLEEP=0
+    bash -c "${p_herdr_script}" >/dev/null 2>&1
+  ) && ph_ok=1
+
+  # カスタム値（shell_mode = "non_login"）、インラインテーブル（shell_mode あり/なし）、ドット記法（shell_mode なし）を尊重して通過
+  printf '[terminal]\nshell_mode = "non_login"\n' > "${ph_home}/.config/herdr/config.toml"
+  local ph_custom_ok=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${ph_home}"
+    export PROBE_TIMEOUT=1
+    export PROBE_SLEEP=0
+    bash -c "${p_herdr_script}" >/dev/null 2>&1
+  ) && ph_custom_ok=1
+
+  printf 'terminal = { new_cwd = "home" }\n' > "${ph_home}/.config/herdr/config.toml"
+  local ph_inline_ok=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${ph_home}"
+    export PROBE_TIMEOUT=1
+    export PROBE_SLEEP=0
+    bash -c "${p_herdr_script}" >/dev/null 2>&1
+  ) && ph_inline_ok=1
+
+  printf 'terminal.new_cwd = "home"\n' > "${ph_home}/.config/herdr/config.toml"
+  local ph_dotted_ok=0
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${ph_home}"
+    export PROBE_TIMEOUT=1
+    export PROBE_SLEEP=0
+    bash -c "${p_herdr_script}" >/dev/null 2>&1
+  ) && ph_dotted_ok=1
+
+  # 既存 config.toml が herdr config check に失敗する場合は警告を出して通過（provision の既存設定保護方針と一致）
+  printf 'invalid = [\n' > "${ph_home}/.config/herdr/config.toml"
+  local ph_check_skip_ok=0 ph_check_skip_stderr="${test_dir}/ph_check_skip.stderr"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${ph_home}"
+    export STUB_PROBE_HERDR_CONFIG_FAIL=1
+    export PROBE_TIMEOUT=1
+    export PROBE_SLEEP=0
+    bash -c "${p_herdr_script}" 2>"${ph_check_skip_stderr}"
+  ) && ph_check_skip_ok=1
+
+  # config.toml 不在で失敗し理由出力
+  rm -f "${ph_home}/.config/herdr/config.toml"
+  local ph_missing_failed=0 ph_missing_stderr="${test_dir}/ph_missing.stderr"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${ph_home}"
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p_herdr_script}" 2>"${ph_missing_stderr}"
+  ) || ph_missing_failed=1
+
+  # shell_mode 未設定（[theme] のみ、および複数行配列内に ["terminal"] を含むが未設定）で失敗し理由出力
+  printf '[theme]\nname = "nord"\n' > "${ph_home}/.config/herdr/config.toml"
+  local ph_unset_failed=0 ph_unset_stderr="${test_dir}/ph_unset.stderr"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${ph_home}"
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p_herdr_script}" 2>"${ph_unset_stderr}"
+  ) || ph_unset_failed=1
+
+  printf '[ui.sidebar.agents]\nrows = [\n  ["terminal"],\n  ["agent"],\n]\n' > "${ph_home}/.config/herdr/config.toml"
+  local ph_mlarr_unset_failed=0 ph_mlarr_unset_stderr="${test_dir}/ph_mlarr_unset.stderr"
+  (
+    export PATH="${fake_bin}:${PATH}"
+    export HOME="${ph_home}"
+    export PROBE_TIMEOUT=0
+    export PROBE_SLEEP=0
+    bash -c "${p_herdr_script}" 2>"${ph_mlarr_unset_stderr}"
+  ) || ph_mlarr_unset_failed=1
+
+  if [ "${ph_ok}" -eq 1 ] && [ "${ph_custom_ok}" -eq 1 ] && [ "${ph_inline_ok}" -eq 1 ] && [ "${ph_dotted_ok}" -eq 1 ] && \
+     [ "${ph_check_skip_ok}" -eq 1 ] && grep -q "skipping probe check to preserve user config" "${ph_check_skip_stderr}" && \
+     [ "${ph_missing_failed}" -eq 1 ] && grep -q "not found or empty" "${ph_missing_stderr}" && \
+     [ "${ph_unset_failed}" -eq 1 ] && grep -q "shell_mode is not configured" "${ph_unset_stderr}" && \
+     [ "${ph_mlarr_unset_failed}" -eq 1 ] && grep -q "shell_mode is not configured" "${ph_mlarr_unset_stderr}"; then
+    log_pass "${suite}: probe herdr login shell configuration verifies config.toml and reports causes"
+  else
+    log_fail "${suite}: probe herdr login shell configuration checks failed (ok=${ph_ok}, custom=${ph_custom_ok}, inline=${ph_inline_ok}, dotted=${ph_dotted_ok}, skip=${ph_check_skip_ok}, missing=${ph_missing_failed}, unset=${ph_unset_failed}, mlarr=${ph_mlarr_unset_failed})"
   fi
 }

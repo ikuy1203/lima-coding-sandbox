@@ -389,6 +389,201 @@ probes:
       sleep "${PROBE_SLEEP:-3}"
     done
   hint: See "/var/log/cloud-init-output.log" in the guest
+- description: herdr login shell configuration to be configured
+  script: |
+    #!/bin/bash
+    set -eu -o pipefail
+    # provision/herdr.sh が ~/.config/herdr/config.toml に shell_mode を設定していることを確認する。
+    # 利用者が shell_mode を別の値に変更した場合や、provision/herdr.sh が既存設定保護のため
+    # 意図してスキップした状態（config check 失敗、インラインテーブル、ドット記法）も尊重して通過する。
+    herdr_bin="${HERDR_BIN:-$HOME/.local/bin/herdr}"
+    config_file="${HERDR_CONFIG_FILE:-$HOME/.config/herdr/config.toml}"
+    failure_reason=""
+
+    inspect_herdr_config() {
+      local config_file="$1"
+      awk '
+        function scan_multiline_state(s,    i, n, c, c3, in_dq, in_sq) {
+          n = length(s)
+          i = 1
+          in_dq = 0
+          in_sq = 0
+          while (i <= n) {
+            if (in_ml_dq) {
+              if (substr(s, i, 1) == "\\") {
+                i += 2
+                continue
+              }
+              if (substr(s, i, 3) == "\"\"\"") {
+                in_ml_dq = 0
+                i += 3
+                continue
+              }
+              i++
+              continue
+            }
+            if (in_ml_sq) {
+              if (substr(s, i, 3) == "\047\047\047") {
+                in_ml_sq = 0
+                i += 3
+                continue
+              }
+              i++
+              continue
+            }
+            if (in_dq) {
+              c = substr(s, i, 1)
+              if (c == "\\") {
+                i += 2
+                continue
+              }
+              if (c == "\"") {
+                in_dq = 0
+              }
+              i++
+              continue
+            }
+            if (in_sq) {
+              if (substr(s, i, 1) == "\047") {
+                in_sq = 0
+              }
+              i++
+              continue
+            }
+            c = substr(s, i, 1)
+            if (c == "#") {
+              break
+            }
+            c3 = substr(s, i, 3)
+            if (c3 == "\"\"\"") {
+              in_ml_dq = 1
+              i += 3
+              continue
+            }
+            if (c3 == "\047\047\047") {
+              in_ml_sq = 1
+              i += 3
+              continue
+            }
+            if (c == "\"") {
+              in_dq = 1
+            } else if (c == "\047") {
+              in_sq = 1
+            } else if (c == "[") {
+              bracket_depth++
+            } else if (c == "]") {
+              if (bracket_depth > 0) {
+                bracket_depth--
+              }
+            } else if (c == "{") {
+              brace_depth++
+            } else if (c == "}") {
+              if (brace_depth > 0) {
+                brace_depth--
+              }
+            }
+            i++
+          }
+        }
+        BEGIN {
+          in_root = 1
+          in_terminal = 0
+          in_ml_dq = 0
+          in_ml_sq = 0
+          bracket_depth = 0
+          brace_depth = 0
+          first_terminal_line = 0
+          has_shell_mode = 0
+          has_unsupported_form = 0
+        }
+        {
+          line = $0
+          sub(/\r$/, "", line)
+          started_nested = (in_ml_dq || in_ml_sq || bracket_depth > 0 || brace_depth > 0)
+          scan_multiline_state(line)
+          if (started_nested) {
+            next
+          }
+          if (line ~ /^[ \t]*\[[ \t]*(terminal|"terminal"|\047terminal\047)[ \t]*\]([ \t]*(#.*)?)?$/) {
+            in_terminal = 1
+            in_root = 0
+            if (!first_terminal_line) {
+              first_terminal_line = NR
+            }
+            next
+          }
+          if (line ~ /^[ \t]*\[/) {
+            in_terminal = 0
+            in_root = 0
+            next
+          }
+          if (in_terminal && line ~ /^[ \t]*(shell_mode|"shell_mode"|\047shell_mode\047)[ \t]*=/) {
+            has_shell_mode = 1
+            next
+          }
+          if (in_root && line ~ /^[ \t]*(terminal|"terminal"|\047terminal\047)[ \t]*\.[ \t]*(shell_mode|"shell_mode"|\047shell_mode\047)[ \t]*=/) {
+            has_shell_mode = 1
+            next
+          }
+          if (in_root && (line ~ /^[ \t]*(terminal|"terminal"|\047terminal\047)[ \t]*=[ \t]*\{/ || line ~ /^[ \t]*(terminal|"terminal"|\047terminal\047)[ \t]*\./)) {
+            has_unsupported_form = 1
+            next
+          }
+        }
+        END {
+          if (has_shell_mode) {
+            print "already_set"
+          } else if (has_unsupported_form) {
+            print "unsupported_form"
+          } else if (first_terminal_line > 0) {
+            print "insert_in_section:" first_terminal_line
+          } else {
+            print "append_section"
+          }
+        }
+      ' "${config_file}"
+    }
+
+    verify_herdr_config() {
+      failure_reason=""
+      if [ ! -s "${config_file}" ]; then
+        failure_reason="${config_file} not found or empty"
+        return 1
+      fi
+      if [ ! -x "${herdr_bin}" ]; then
+        failure_reason="${herdr_bin} not found or not executable"
+        return 1
+      fi
+      if ! HERDR_CONFIG_PATH="${config_file}" timeout -k 2 5 "${herdr_bin}" config check >/dev/null 2>&1; then
+        # 既存設定の構文エラーや未知キーで provision/herdr.sh が保護スキップしたケースと揃え、1 回警告を出して通過する
+        echo >&2 "warning: existing ${config_file} failed 'herdr config check'; skipping probe check to preserve user config"
+        return 0
+      fi
+      local action
+      if ! action=$(inspect_herdr_config "${config_file}"); then
+        failure_reason="failed to inspect ${config_file}"
+        return 1
+      fi
+      case "${action}" in
+        already_set|unsupported_form)
+          return 0
+          ;;
+        *)
+          failure_reason="shell_mode is not configured in ${config_file}"
+          return 1
+          ;;
+      esac
+    }
+
+    deadline=$((SECONDS + ${PROBE_TIMEOUT:-30}))
+    until verify_herdr_config; do
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        echo >&2 "herdr login shell configuration verification failed (${failure_reason})"
+        exit 1
+      fi
+      sleep "${PROBE_SLEEP:-3}"
+    done
+  hint: See "/var/log/cloud-init-output.log" in the guest
 - description: mise shims to be on PATH in login shells
   script: |
     #!/bin/bash

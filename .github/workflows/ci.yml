@@ -157,6 +157,10 @@ jobs:
           limactl shell ci fd --version
           limactl shell ci rg --version
 
+          echo "Verifying herdr login shell configuration..."
+          limactl shell ci herdr config check
+          limactl shell ci bash -c 'grep -Fq "shell_mode = \"login\"" "$HOME/.config/herdr/config.toml"'
+
           echo "Verifying Git commit signing inside VM..."
           limactl shell ci bash -c '
             set -eux -o pipefail
@@ -207,6 +211,11 @@ jobs:
             # agent instruction markers count
             instr_markers=$(grep -c "BEGIN lima-coding-sandbox agent-instructions" ~/.copilot/copilot-instructions.md || true)
             [ "$instr_markers" -eq 1 ]
+
+            # herdr config marker in ~/.config/herdr/config.toml
+            herdr_markers=$(grep -c "added by lima-coding-sandbox provision/herdr.sh" ~/.config/herdr/config.toml || true)
+            [ "$herdr_markers" -eq 1 ]
+            herdr config check
           '
 
       - name: Dump logs on failure

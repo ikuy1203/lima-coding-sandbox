@@ -1,8 +1,15 @@
 #!/bin/bash
-# herdr をインストールする（mode: user / 通常ユーザで実行）
+# herdr をインストールし、ログインシェル設定を構成する（mode: user / 通常ユーザで実行）
 #
 # 公式手順: https://herdr.dev/docs/install/
 # インストール先: ~/.local/bin/herdr（以後の更新は `herdr update`）
+# 設定ファイル: ~/.config/herdr/config.toml（[terminal] shell_mode = "login"）
+#
+# Linux 版の herdr は [terminal].shell_mode の既定値 "auto" が非ログインシェルを起動する。
+# そのため make herdr-remote（herdr --remote）等で非ログイン SSH 経由でサーバが起動すると、
+# ~/.profile（mise shims や ~/.local/bin）および /etc/profile.d/* が一度も読み込まれない。
+# そこで ~/.config/herdr/config.toml に shell_mode = "login" を設定する（冪等、かつ利用者が
+# 既に shell_mode を設定済みの場合は上書きせず尊重する）。
 #
 # 公式 install スクリプトはバージョン指定に未対応（常に https://herdr.dev/latest.json の版を入れる。
 # 環境変数は HERDR_INSTALL_DIR のみ）。インストーラ自身が latest.json に記載された sha256 と
@@ -81,14 +88,16 @@ verify_cli() {
   return 0
 }
 
+need_install=1
 bin="${HOME}/.local/bin/herdr"
 broken_existing=false
 if [ -e "${bin}" ] || [ -L "${bin}" ]; then
   if verify_cli "herdr" "${bin}"; then
-    exit 0
+    need_install=0
+  else
+    echo >&2 "warning: existing herdr binary at ${bin} is broken or failed verification; reinstalling"
+    broken_existing=true
   fi
-  echo >&2 "warning: existing herdr binary at ${bin} is broken or failed verification; reinstalling"
-  broken_existing=true
 fi
 
 is_transient_curl_rc() {
@@ -226,22 +235,283 @@ download_file() {
   return 1
 }
 
-installer=$(mktemp)
-tmp_files+=("${installer}")
-download_file https://herdr.dev/install.sh "${installer}"
-backup_bin=""
-if [ "${broken_existing}" = true ] && { [ -e "${bin}" ] || [ -L "${bin}" ]; }; then
-  backup_bin=$(mktemp "${bin}.bak.XXXXXX")
-  mv -f "${bin}" "${backup_bin}"
-fi
-if ! { sh "${installer}" && verify_cli "herdr" "${bin}"; }; then
-  rm -f "${bin}"
-  if [ -n "${backup_bin}" ] && { [ -e "${backup_bin}" ] || [ -L "${backup_bin}" ]; }; then
-    echo >&2 "warning: reinstallation failed; restoring original binary"
-    mv -f "${backup_bin}" "${bin}"
+if [ "${need_install}" -eq 1 ]; then
+  installer=$(mktemp)
+  tmp_files+=("${installer}")
+  download_file https://herdr.dev/install.sh "${installer}"
+  backup_bin=""
+  if [ "${broken_existing}" = true ] && { [ -e "${bin}" ] || [ -L "${bin}" ]; }; then
+    backup_bin=$(mktemp "${bin}.bak.XXXXXX")
+    mv -f "${bin}" "${backup_bin}"
   fi
-  exit 1
+  if ! { sh "${installer}" && verify_cli "herdr" "${bin}"; }; then
+    rm -f "${bin}"
+    if [ -n "${backup_bin}" ] && { [ -e "${backup_bin}" ] || [ -L "${backup_bin}" ]; }; then
+      echo >&2 "warning: reinstallation failed; restoring original binary"
+      mv -f "${backup_bin}" "${bin}"
+    fi
+    exit 1
+  fi
+  if [ -n "${backup_bin}" ]; then
+    rm -f "${backup_bin}"
+  fi
 fi
-if [ -n "${backup_bin}" ]; then
-  rm -f "${backup_bin}"
-fi
+
+inspect_herdr_config() {
+  local config_file="$1"
+  awk '
+    function scan_multiline_state(s,    i, n, c, c3, in_dq, in_sq) {
+      n = length(s)
+      i = 1
+      in_dq = 0
+      in_sq = 0
+      while (i <= n) {
+        if (in_ml_dq) {
+          if (substr(s, i, 1) == "\\") {
+            i += 2
+            continue
+          }
+          if (substr(s, i, 3) == "\"\"\"") {
+            in_ml_dq = 0
+            i += 3
+            continue
+          }
+          i++
+          continue
+        }
+        if (in_ml_sq) {
+          if (substr(s, i, 3) == "\047\047\047") {
+            in_ml_sq = 0
+            i += 3
+            continue
+          }
+          i++
+          continue
+        }
+        if (in_dq) {
+          c = substr(s, i, 1)
+          if (c == "\\") {
+            i += 2
+            continue
+          }
+          if (c == "\"") {
+            in_dq = 0
+          }
+          i++
+          continue
+        }
+        if (in_sq) {
+          if (substr(s, i, 1) == "\047") {
+            in_sq = 0
+          }
+          i++
+          continue
+        }
+        c = substr(s, i, 1)
+        if (c == "#") {
+          break
+        }
+        c3 = substr(s, i, 3)
+        if (c3 == "\"\"\"") {
+          in_ml_dq = 1
+          i += 3
+          continue
+        }
+        if (c3 == "\047\047\047") {
+          in_ml_sq = 1
+          i += 3
+          continue
+        }
+        if (c == "\"") {
+          in_dq = 1
+        } else if (c == "\047") {
+          in_sq = 1
+        } else if (c == "[") {
+          bracket_depth++
+        } else if (c == "]") {
+          if (bracket_depth > 0) {
+            bracket_depth--
+          }
+        } else if (c == "{") {
+          brace_depth++
+        } else if (c == "}") {
+          if (brace_depth > 0) {
+            brace_depth--
+          }
+        }
+        i++
+      }
+    }
+    BEGIN {
+      in_root = 1
+      in_terminal = 0
+      in_ml_dq = 0
+      in_ml_sq = 0
+      bracket_depth = 0
+      brace_depth = 0
+      first_terminal_line = 0
+      has_shell_mode = 0
+      has_unsupported_form = 0
+    }
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      started_nested = (in_ml_dq || in_ml_sq || bracket_depth > 0 || brace_depth > 0)
+      scan_multiline_state(line)
+      if (started_nested) {
+        next
+      }
+      if (line ~ /^[ \t]*\[[ \t]*(terminal|"terminal"|\047terminal\047)[ \t]*\]([ \t]*(#.*)?)?$/) {
+        in_terminal = 1
+        in_root = 0
+        if (!first_terminal_line) {
+          first_terminal_line = NR
+        }
+        next
+      }
+      if (line ~ /^[ \t]*\[/) {
+        in_terminal = 0
+        in_root = 0
+        next
+      }
+      if (in_terminal && line ~ /^[ \t]*(shell_mode|"shell_mode"|\047shell_mode\047)[ \t]*=/) {
+        has_shell_mode = 1
+        next
+      }
+      if (in_root && line ~ /^[ \t]*(terminal|"terminal"|\047terminal\047)[ \t]*\.[ \t]*(shell_mode|"shell_mode"|\047shell_mode\047)[ \t]*=/) {
+        has_shell_mode = 1
+        next
+      }
+      if (in_root && (line ~ /^[ \t]*(terminal|"terminal"|\047terminal\047)[ \t]*=[ \t]*\{/ || line ~ /^[ \t]*(terminal|"terminal"|\047terminal\047)[ \t]*\./)) {
+        has_unsupported_form = 1
+        next
+      }
+    }
+    END {
+      if (has_shell_mode) {
+        print "already_set"
+      } else if (has_unsupported_form) {
+        print "unsupported_form"
+      } else if (first_terminal_line > 0) {
+        print "insert_in_section:" first_terminal_line
+      } else {
+        print "append_section"
+      }
+    }
+  ' "${config_file}"
+}
+
+configure_herdr_shell_mode() {
+  local config_file="${HOME}/.config/herdr/config.toml"
+  local marker="# added by lima-coding-sandbox provision/herdr.sh"
+  local comment_line="${marker}: リモート接続（herdr --remote）でも ~/.profile（mise shims や ~/.local/bin）が読まれるようにする"
+  local verify_timeout="${CLI_VERIFY_TIMEOUT:-10}"
+  local tmp=""
+
+  if [ ! -e "${config_file}" ]; then
+    tmp=$(mktemp)
+    tmp_files+=("${tmp}")
+    cat >"${tmp}" <<EOF
+${comment_line}
+[terminal]
+shell_mode = "login"
+EOF
+    if ! HERDR_CONFIG_PATH="${tmp}" timeout -k 2 "${verify_timeout}" "${bin}" config check >/dev/null 2>&1; then
+      echo >&2 "error: generated herdr config failed 'herdr config check'"
+      return 1
+    fi
+    if [ -L "${config_file}" ]; then
+      local link_target
+      link_target=$(readlink "${config_file}")
+      case "${link_target}" in
+        /*) ;;
+        *) link_target="$(dirname "${config_file}")/${link_target}" ;;
+      esac
+      install -m 0755 -d "$(dirname "${link_target}")"
+      cat "${tmp}" >"${config_file}"
+    else
+      install -m 0755 -d "$(dirname "${config_file}")"
+      install -m 0644 "${tmp}" "${config_file}"
+    fi
+    return 0
+  fi
+
+  # 既存ファイルが壊れている場合は上書きせず保護する
+  if ! HERDR_CONFIG_PATH="${config_file}" timeout -k 2 "${verify_timeout}" "${bin}" config check >/dev/null 2>&1; then
+    echo >&2 "warning: existing ${config_file} failed 'herdr config check'; skipping shell_mode configuration"
+    return 0
+  fi
+
+  local action
+  if ! action=$(inspect_herdr_config "${config_file}"); then
+    echo >&2 "error: failed to inspect ${config_file}"
+    return 1
+  fi
+
+  local eol=""
+  if awk '/\r$/ { found=1; exit } END { exit !found }' "${config_file}"; then
+    eol=$'\r'
+  fi
+
+  case "${action}" in
+    already_set)
+      return 0
+      ;;
+    unsupported_form)
+      echo >&2 "warning: ${config_file} defines terminal via inline table or dotted key without shell_mode; skipping automatic configuration"
+      return 0
+      ;;
+    insert_in_section:*)
+      local target_line="${action#insert_in_section:}"
+      tmp=$(mktemp)
+      tmp_files+=("${tmp}")
+      HERDR_COMMENT_LINE="${comment_line}" HERDR_EOL="${eol}" awk -v target="${target_line}" '
+        NR == target {
+          print
+          print ENVIRON["HERDR_COMMENT_LINE"] ENVIRON["HERDR_EOL"]
+          print "shell_mode = \"login\"" ENVIRON["HERDR_EOL"]
+          next
+        }
+        { print }
+      ' "${config_file}" >"${tmp}"
+      ;;
+    append_section)
+      tmp=$(mktemp)
+      tmp_files+=("${tmp}")
+      if [ ! -s "${config_file}" ]; then
+        cat >"${tmp}" <<EOF
+${comment_line}
+[terminal]
+shell_mode = "login"
+EOF
+      else
+        HERDR_COMMENT_LINE="${comment_line}" HERDR_EOL="${eol}" awk '
+          { print }
+          END {
+            print "" ENVIRON["HERDR_EOL"]
+            print ENVIRON["HERDR_COMMENT_LINE"] ENVIRON["HERDR_EOL"]
+            print "[terminal]" ENVIRON["HERDR_EOL"]
+            print "shell_mode = \"login\"" ENVIRON["HERDR_EOL"]
+          }
+        ' "${config_file}" >"${tmp}"
+      fi
+      ;;
+    *)
+      echo >&2 "error: unexpected herdr config analysis result: ${action}"
+      return 1
+      ;;
+  esac
+
+  # 既存の構文エラーや未知キーは事前チェックで return 0 スキップ済みのため、
+  # ここで失敗するのは本スクリプトが生成した更新内容に不備がある場合のみ。
+  # 既存ファイルを書き換えずに保護したうえで、不具合を隠さないよう非ゼロ終了する。
+  if ! HERDR_CONFIG_PATH="${tmp}" timeout -k 2 "${verify_timeout}" "${bin}" config check >/dev/null 2>&1; then
+    echo >&2 "error: updated herdr config failed 'herdr config check'; preserving existing ${config_file}"
+    return 1
+  fi
+  if ! cmp -s "${tmp}" "${config_file}"; then
+    cat "${tmp}" >"${config_file}"
+  fi
+}
+
+configure_herdr_shell_mode

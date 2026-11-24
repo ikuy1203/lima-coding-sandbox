@@ -194,6 +194,14 @@ fi
 mkdir -p "$HOME/.local/bin"
 cat << 'BIN' > "$HOME/.local/bin/herdr"
 #!/bin/sh
+if [ "${1:-}" = "config" ] && [ "${2:-}" = "check" ]; then
+  if [ "${STUB_HERDR_CONFIG_CHECK_FAIL:-0}" = "1" ]; then
+    echo >&2 "config: issues found"
+    exit 1
+  fi
+  echo "config: ok"
+  exit 0
+fi
 echo "herdr stub 0.1.0"
 BIN
 chmod +x "$HOME/.local/bin/herdr"
